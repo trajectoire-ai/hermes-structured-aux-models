@@ -58,6 +58,12 @@ references were true against Hermes `v0.21.0`.
 - Aux call sites: `tools/approval_smart.py` (`task="approval"`), `tools/mcp_tool_sampling.py`
   (`task="mcp"`), `agent/context_compressor.py` (`task="compression"`).
   `skills_hub` is a registered aux key with **no call site** — deliberately out of scope.
+- `agent/credential_pool.py:load_pool(provider)` + `CredentialPool.has_credentials()` /
+  `select().runtime_api_key` is how Hermes itself reads an authenticated provider's key.
+  It is the plugin's third credential source, so an operator's `hermes auth add openrouter`
+  entry is used without duplicating the secret into `.env`. Note `hermes_cli.auth` exposes no
+  API-key resolver for `openrouter` (it has a dedicated chat branch, not `auth_type="api_key"`),
+  so the pool is the correct seam rather than `resolve_api_key_provider_credentials`.
 
 ## Testing
 

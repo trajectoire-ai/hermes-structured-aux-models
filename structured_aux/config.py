@@ -33,6 +33,9 @@ DEFAULT_APP_TITLE = "hermes-structured-aux"
 # an exact id with plugins.entries.<PLUGIN_ID>.settings.decision_model.
 DEFAULT_MODEL = "~typesafe/jev-latest"
 CREDENTIAL_ENV_VAR = "OPENROUTER_API_KEY"
+# Hermes' own credential store key for OpenRouter, used as the last-resort credential
+# source (see ``_pool_api_key``).
+POOL_PROVIDER = "openrouter"
 
 # Task -> the model id suffix an operator writes into auxiliary.<task>.model.
 # The shim reads this back off the request to know which contract to apply.
@@ -175,6 +178,31 @@ def _dotenv_value(name: str) -> str:
     return ""
 
 
+def _pool_api_key() -> str:
+    """The OpenRouter key Hermes itself uses, from the active profile's credential pool.
+
+    An operator who already ran ``hermes auth add openrouter`` has the credential in Hermes'
+    store, and that is the same key the rest of Hermes bills; reading it here keeps one source
+    of truth instead of duplicating the secret into ``.env``. Wrapped so an unresolvable pool
+    degrades to "no credential" — the decision client then raises and Hermes falls back to the
+    operator's real auxiliary provider.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(POOL_PROVIDER)
+        if pool is None or not pool.has_credentials():
+            return ""
+        return str(getattr(pool.select(), "runtime_api_key", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def api_key() -> str:
-    """The OpenRouter credential, from the process environment then the profile ``.env``."""
-    return (os.getenv(CREDENTIAL_ENV_VAR) or "").strip() or _dotenv_value(CREDENTIAL_ENV_VAR)
+    """The OpenRouter credential, from the process environment, the profile ``.env``, then
+    Hermes' own credential pool for the provider."""
+    return (
+        (os.getenv(CREDENTIAL_ENV_VAR) or "").strip()
+        or _dotenv_value(CREDENTIAL_ENV_VAR)
+        or _pool_api_key()
+    )
