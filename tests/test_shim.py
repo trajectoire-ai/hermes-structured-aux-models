@@ -220,3 +220,16 @@ def test_client_declares_wrapper_opt_outs(shim, make_transport):
 
 def test_client_exposes_the_chat_completions_surface(shim, make_transport):
     assert callable(shim(make_transport()).chat.completions.create)
+
+
+def test_external_process_placeholder_is_not_used_as_a_credential(monkeypatch, make_transport):
+    """The external_process credential branch passes the provider id as a placeholder.
+
+    Sending it as a bearer token would 401 every decision call.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-real-key")
+    from structured_aux.shim import StructuredAuxClient
+
+    assert StructuredAuxClient(api_key="structured-aux").api_key == "sk-or-real-key"
+    assert StructuredAuxClient(api_key="").api_key == "sk-or-real-key"
+    assert StructuredAuxClient(api_key="sk-or-explicit").api_key == "sk-or-explicit"

@@ -149,6 +149,11 @@ class StructuredAuxClient:
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
 
+    # ``resolve_external_process_provider_credentials`` returns the provider id as a
+    # placeholder api_key ("the subprocess owns real auth"). This provider owns no
+    # subprocess, so a placeholder carries no credential and must not be sent as one.
+    _PLACEHOLDER_KEYS = frozenset({config.PROVIDER_NAME, config.PLUGIN_ID})
+
     def __init__(
         self,
         *,
@@ -157,7 +162,10 @@ class StructuredAuxClient:
         transport: Any = None,
         decision_model: str | None = None,
     ) -> None:
-        self.api_key = api_key or config.api_key()
+        candidate = (api_key or "").strip()
+        if not candidate or candidate in self._PLACEHOLDER_KEYS:
+            candidate = config.api_key()
+        self.api_key = candidate
         self.base_url = base_url or config.decision_base_url()
         self.chat = _Chat(self)
         self._transport = transport
