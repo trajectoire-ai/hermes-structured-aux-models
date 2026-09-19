@@ -75,8 +75,16 @@ Jev model actually sent to the decisions endpoint is `decision_model` below.
 
 ### Credential
 
-Only `OPENROUTER_API_KEY` is used. It is read from the process environment, falling
-back to the active profile's `.env`. No other credential is required, and none is
+Only the OpenRouter credential is used. It is resolved in this order:
+
+1. `OPENROUTER_API_KEY` in the process environment;
+2. `OPENROUTER_API_KEY` in the active profile's `.env`;
+3. Hermes' own `openrouter` credential entry (`agent.credential_pool.load_pool`).
+
+Step 3 exists so an operator who already ran `hermes auth add openrouter` needs no duplicate
+secret: the plugin bills the same key as the rest of Hermes. If none of the three resolves, the
+provider reports "no OpenRouter credential is configured" and Hermes falls back to your real
+auxiliary provider — a missing key is never fatal. No other credential is required, and none is
 forwarded anywhere except the OpenRouter decisions endpoint.
 
 ### Plugin settings
