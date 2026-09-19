@@ -61,10 +61,23 @@ references were true against Hermes `v0.21.0`.
 
 ## Testing
 
+Install the dev extra from `pyproject.toml` (`[project.optional-dependencies] dev`),
+then:
+
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q .
+python -m pytest
 ```
+
+The suite is offline: every test injects a fake transport, and no test makes a network
+call. A live provider run needs explicit operator approval.
+
+Fixtures live in `tests/conftest.py`. Fake transports record calls as
+`{"url", "headers", "body", "timeout"}`.
+
+The root `__init__.py` is a package entry point, so pytest imports it from outside the
+Hermes runtime while collecting; that is why its `providers` import is guarded. Inside
+Hermes the module is imported *by* `providers`, so registration always runs. Do not
+"clean up" that guard — it is load-bearing for the test run.
 
 ## Delivery
 

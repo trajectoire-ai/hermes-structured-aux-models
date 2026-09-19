@@ -1,210 +1,222 @@
-"""Shim behaviour: which requests are answered, and how."""
+"""Shim behaviour: which requests are answered, how, and with which model."""
 
 from __future__ import annotations
 
-import json
-import unittest
+import pytest
 
-from helpers import choice, make_transport
-
+from structured_aux import config
 from structured_aux.decisions import DecisionError, UnsupportedRequest
-from structured_aux.shim import StructuredAuxClient
 
-APPROVAL_MESSAGES = [
-    {"role": "system", "content": "You are a command-risk guardian."},
+TOOLS = [
     {
-        "role": "user",
-        "content": (
-            "The following command was flagged as: script execution via -c flag\n\n"
-            "<command>\npython3 -c 'print(1)'\n</command>\n\n"
-            "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
-        ),
+        "type": "function",
+        "function": {"name": "read_file", "description": "Read a file", "parameters": {"type": "object", "properties": {}}},
+    },
+    {
+        "type": "function",
+        "function": {"name": "search", "description": "Search text", "parameters": {"type": "object", "properties": {}}},
     },
 ]
 
 
-def dynamic_transport(responder):
-    """Transport whose answers are computed from the request body."""
-    calls = []
-
-    def transport(url, headers, body_bytes, timeout):
-        body = json.loads(body_bytes.decode("utf-8"))
-        calls.append(body)
-        payload = {"answers": responder(body), "model": "typesafe/jev-1.13", "usage": {}, "id": "gen-1"}
-        return 200, json.dumps(payload).encode("utf-8"), {}
-
-    transport.calls = calls
-    return transport
+# ── approval ────────────────────────────────────────────────────────────────────
 
 
-def shim(transport, **kwargs):
-    return StructuredAuxClient(api_key="test-key", transport=transport, **kwargs)
+@pytest.mark.parametrize("label", ["APPROVE", "DENY", "ESCALATE"])
+def test_verdict_is_returned_verbatim(shim, make_transport, choice, approval_messages, label):
+    transport = make_transport(answers={"verdict": choice(label)})
+    response = shim(transport).create(model="structured-aux/approval", messages=approval_messages)
+
+    assert response.choices[0].message.content == label
+    assert response.choices[0].finish_reason == "stop"
 
 
-class ApprovalRoutingTests(unittest.TestCase):
-    def test_approve_verdict_is_returned_verbatim(self):
-        transport = make_transport(answers={"verdict": choice("APPROVE")})
-        response = shim(transport).create(model="structured-aux/approval", messages=APPROVAL_MESSAGES)
-        self.assertEqual(response.choices[0].message.content, "APPROVE")
-        self.assertEqual(response.choices[0].finish_reason, "stop")
-
-    def test_deny_and_escalate_survive(self):
-        for label in ("DENY", "ESCALATE"):
-            transport = make_transport(answers={"verdict": choice(label)})
-            response = shim(transport).create(model="structured-aux/approval", messages=APPROVAL_MESSAGES)
-            self.assertEqual(response.choices[0].message.content, label)
-
-    def test_out_of_contract_verdict_raises(self):
-        transport = make_transport(answers={"verdict": choice("PROBABLY_FINE")})
-        with self.assertRaises(DecisionError):
-            shim(transport).create(model="structured-aux/approval", messages=APPROVAL_MESSAGES)
-
-    def test_guardian_policy_is_forwarded_as_state(self):
-        transport = make_transport(answers={"verdict": choice("APPROVE")})
-        shim(transport).create(model="structured-aux/approval", messages=APPROVAL_MESSAGES)
-        state = transport.calls[0]["body"]["state"]
-        self.assertEqual(state["guardian_policy"], "You are a command-risk guardian.")
-        self.assertIn("python3 -c", state["request"])
-
-    def test_empty_command_text_is_unsupported(self):
-        transport = make_transport(answers={"verdict": choice("APPROVE")})
-        with self.assertRaises(UnsupportedRequest):
-            shim(transport).create(model="structured-aux/approval", messages=[{"role": "system", "content": "only"}])
-
-    def test_detected_from_content_when_model_is_generic(self):
-        transport = make_transport(answers={"verdict": choice("APPROVE")})
-        response = shim(transport).create(model="", messages=APPROVAL_MESSAGES)
-        self.assertEqual(response.choices[0].message.content, "APPROVE")
+def test_out_of_contract_verdict_raises(shim, make_transport, choice, approval_messages):
+    transport = make_transport(answers={"verdict": choice("PROBABLY_FINE")})
+    with pytest.raises(DecisionError):
+        shim(transport).create(model="structured-aux/approval", messages=approval_messages)
 
 
-class UnsupportedRoutingTests(unittest.TestCase):
-    def test_unknown_model_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}])
+def test_guardian_policy_is_forwarded_as_state(shim, make_transport, choice, approval_messages):
+    transport = make_transport(answers={"verdict": choice("APPROVE")})
+    shim(transport).create(model="structured-aux/approval", messages=approval_messages)
 
-    def test_no_model_and_no_marker_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(model="", messages=[{"role": "user", "content": "summarise this"}])
-
-    def test_streaming_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(
-                model="structured-aux/approval", messages=APPROVAL_MESSAGES, stream=True
-            )
-
-    def test_out_of_scope_task_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(model="structured-aux/skills_hub", messages=[])
+    state = transport.calls[0]["body"]["state"]
+    assert state["guardian_policy"] == "You are a command-risk guardian."
+    assert "python3 -c" in state["request"]
 
 
-class McpRoutingTests(unittest.TestCase):
-    TOOLS = [
-        {"type": "function", "function": {"name": "read_file", "description": "Read a file", "parameters": {"type": "object", "properties": {}}}},
-        {"type": "function", "function": {"name": "search", "description": "Search text", "parameters": {"type": "object", "properties": {}}}},
-    ]
+def test_detected_from_content_when_model_is_generic(shim, make_transport, choice, approval_messages):
+    transport = make_transport(answers={"verdict": choice("APPROVE")})
+    response = shim(transport).create(model="", messages=approval_messages)
+    assert response.choices[0].message.content == "APPROVE"
 
-    def test_selects_a_tool(self):
+
+# ── the routing token is not a model id ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "model_id,task",
+    [("structured-aux/approval", "approval"), ("structured-aux/mcp", "mcp"), ("structured-aux/compression", "compression")],
+)
+def test_routing_token_is_never_sent_as_the_model(shim, make_transport, dynamic_transport, choice, approval_messages, model_id, task):
+    """Regression: the operator's routing token must not reach the provider as a model.
+
+    ``auxiliary.<task>.model`` carries ``structured-aux/<task>`` so the shim can pick a
+    contract. Sending that string as the Jev model would fail every decision call.
+    """
+    if task == "compression":
+        transport = dynamic_transport(lambda body: {name: choice("KEEP") for name in body["questions"]})
+        messages = [{"role": "user", "content": "alpha\n\nbeta"}]
+    elif task == "mcp":
         transport = make_transport(answers={"tool": choice("search")})
-        response = shim(transport).create(
-            model="structured-aux/mcp", messages=[{"role": "user", "content": "find the config"}], tools=self.TOOLS
-        )
-        call = response.choices[0].message.tool_calls[0]
-        self.assertEqual(call.function.name, "search")
-        self.assertEqual(response.choices[0].finish_reason, "tool_calls")
+        messages = [{"role": "user", "content": "find it"}]
+    else:
+        transport = make_transport(answers={"verdict": choice("APPROVE")})
+        messages = approval_messages
 
-    def test_candidates_are_sent_as_criteria(self):
-        transport = make_transport(answers={"tool": choice("read_file")})
-        shim(transport).create(
-            model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=self.TOOLS
-        )
-        criteria = transport.calls[0]["body"]["questions"]["tool"]["criteria"]
-        self.assertEqual(set(criteria), {"read_file", "search"})
+    kwargs = {"tools": TOOLS} if task == "mcp" else {}
+    shim(transport).create(model=model_id, messages=messages, **kwargs)
 
-    def test_tools_requiring_arguments_are_excluded(self):
-        tools = list(self.TOOLS) + [
-            {"type": "function", "function": {"name": "write_file", "description": "Write", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}
-        ]
-        transport = make_transport(answers={"tool": choice("read_file")})
-        shim(transport).create(model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=tools)
-        criteria = transport.calls[0]["body"]["questions"]["tool"]["criteria"]
-        self.assertNotIn("write_file", criteria)
+    sent_model = transport.calls[0]["body"]["model"]
+    assert sent_model == config.decision_model()
+    assert sent_model != model_id
+    assert "structured-aux" not in sent_model
 
-    def test_no_tools_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}])
 
-    def test_single_candidate_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(
-                model="structured-aux/mcp",
-                messages=[{"role": "user", "content": "x"}],
-                tools=[self.TOOLS[0]],
-            )
+# ── unsupported requests ────────────────────────────────────────────────────────
 
-    def test_only_argument_bearing_tools_is_unsupported(self):
-        tools = [
+
+@pytest.mark.parametrize(
+    "model_id,messages",
+    [
+        ("gpt-4o", [{"role": "user", "content": "hi"}]),
+        ("", [{"role": "user", "content": "summarise this"}]),
+        ("structured-aux/skills_hub", []),
+    ],
+)
+def test_unsupported_requests_raise(shim, make_transport, model_id, messages):
+    with pytest.raises(UnsupportedRequest):
+        shim(make_transport()).create(model=model_id, messages=messages)
+
+
+def test_streaming_is_unsupported(shim, make_transport, approval_messages):
+    with pytest.raises(UnsupportedRequest):
+        shim(make_transport()).create(model="structured-aux/approval", messages=approval_messages, stream=True)
+
+
+def test_approval_without_command_text_is_unsupported(shim, make_transport):
+    with pytest.raises(UnsupportedRequest):
+        shim(make_transport()).create(model="structured-aux/approval", messages=[{"role": "system", "content": "only"}])
+
+
+# ── mcp ─────────────────────────────────────────────────────────────────────────
+
+
+def test_mcp_selects_a_tool(shim, make_transport, choice):
+    transport = make_transport(answers={"tool": choice("search")})
+    response = shim(transport).create(
+        model="structured-aux/mcp", messages=[{"role": "user", "content": "find the config"}], tools=TOOLS
+    )
+
+    assert response.choices[0].message.tool_calls[0].function.name == "search"
+    assert response.choices[0].finish_reason == "tool_calls"
+
+
+def test_mcp_sends_candidates_as_criteria(shim, make_transport, choice):
+    transport = make_transport(answers={"tool": choice("read_file")})
+    shim(transport).create(model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=TOOLS)
+
+    criteria = transport.calls[0]["body"]["questions"]["tool"]["criteria"]
+    assert set(criteria) == {"read_file", "search"}
+
+
+def test_mcp_excludes_tools_requiring_arguments(shim, make_transport, choice):
+    tools = list(TOOLS) + [
+        {
+            "type": "function",
+            "function": {
+                "name": "write_file",
+                "description": "Write",
+                "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
+            },
+        }
+    ]
+    transport = make_transport(answers={"tool": choice("read_file")})
+    shim(transport).create(model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=tools)
+
+    assert "write_file" not in transport.calls[0]["body"]["questions"]["tool"]["criteria"]
+
+
+@pytest.mark.parametrize(
+    "tools",
+    [
+        None,
+        [TOOLS[0]],
+        [
             {"type": "function", "function": {"name": "a", "parameters": {"required": ["x"]}}},
             {"type": "function", "function": {"name": "b", "parameters": {"required": ["y"]}}},
-        ]
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=tools)
-
-
-class CompressionRoutingTests(unittest.TestCase):
-    def test_returns_an_extractive_digest(self):
-        def responder(body):
-            return {name: choice("KEEP") for name in body["questions"]}
-
-        transport = dynamic_transport(responder)
-        response = shim(transport).create(
-            model="structured-aux/compression",
-            messages=[{"role": "user", "content": "alpha block\n\nbeta block\n\ngamma block"}],
+        ],
+    ],
+    ids=["no-tools", "single-candidate", "only-argument-bearing"],
+)
+def test_mcp_without_two_answerable_candidates_is_unsupported(shim, make_transport, tools):
+    with pytest.raises(UnsupportedRequest):
+        shim(make_transport()).create(
+            model="structured-aux/mcp", messages=[{"role": "user", "content": "x"}], tools=tools
         )
-        content = response.choices[0].message.content
-        self.assertIn("[structured-aux extractive digest]", content)
-        self.assertIn("alpha block", content)
-
-    def test_digest_never_contains_generated_text(self):
-        def responder(body):
-            return {name: choice("DROP") for name in body["questions"]}
-
-        transport = dynamic_transport(responder)
-        response = shim(transport).create(
-            model="structured-aux/compression",
-            messages=[{"role": "user", "content": "alpha block\n\nbeta block"}],
-        )
-        content = response.choices[0].message.content
-        self.assertIn("beta block", content)  # final block retained as a floor
-        self.assertIn("no text was generated", content)
-
-    def test_empty_prompt_is_unsupported(self):
-        with self.assertRaises(UnsupportedRequest):
-            shim(make_transport()).create(
-                model="structured-aux/compression", messages=[{"role": "system", "content": "x"}]
-            )
 
 
-class ResponseShapeTests(unittest.TestCase):
-    def test_usage_is_normalised_to_openai_keys(self):
-        transport = make_transport(
-            answers={"verdict": choice("APPROVE")},
-            usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
-        )
-        response = shim(transport).create(model="structured-aux/approval", messages=APPROVAL_MESSAGES)
-        self.assertEqual(response.usage["prompt_tokens"], 7)
-        self.assertEqual(response.usage["completion_tokens"], 3)
-        self.assertEqual(response.usage["total_tokens"], 10)
-
-    def test_declares_wrapper_opt_outs(self):
-        # Read by agent.auxiliary_client._client_declares; without these the client is
-        # re-dispatched through an HTTP wire adapter.
-        self.assertTrue(StructuredAuxClient.HERMES_SKIP_TRANSPORT_WRAP)
-        self.assertTrue(StructuredAuxClient.HERMES_SKIP_ASYNC_WRAP)
-
-    def test_exposes_chat_completions_surface(self):
-        client = shim(make_transport(answers={"verdict": choice("APPROVE")}))
-        self.assertTrue(callable(client.chat.completions.create))
+# ── compression ─────────────────────────────────────────────────────────────────
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_compression_returns_an_extractive_digest(shim, dynamic_transport, choice):
+    transport = dynamic_transport(lambda body: {name: choice("KEEP") for name in body["questions"]})
+    response = shim(transport).create(
+        model="structured-aux/compression", messages=[{"role": "user", "content": "alpha block\n\nbeta block"}]
+    )
+
+    content = response.choices[0].message.content
+    assert "[structured-aux extractive digest]" in content
+    assert "alpha block" in content
+
+
+def test_compression_digest_never_contains_generated_text(shim, dynamic_transport, choice):
+    transport = dynamic_transport(lambda body: {name: choice("DROP") for name in body["questions"]})
+    response = shim(transport).create(
+        model="structured-aux/compression", messages=[{"role": "user", "content": "alpha block\n\nbeta block"}]
+    )
+
+    content = response.choices[0].message.content
+    assert "beta block" in content  # final block retained as a floor
+    assert "no text was generated" in content
+
+
+def test_compression_without_text_is_unsupported(shim, make_transport):
+    with pytest.raises(UnsupportedRequest):
+        shim(make_transport()).create(model="structured-aux/compression", messages=[{"role": "system", "content": "x"}])
+
+
+# ── response shape ──────────────────────────────────────────────────────────────
+
+
+def test_usage_is_normalised_to_openai_keys(shim, make_transport, choice, approval_messages):
+    transport = make_transport(
+        answers={"verdict": choice("APPROVE")},
+        usage={"input_tokens": 7, "output_tokens": 3, "total_tokens": 10},
+    )
+    response = shim(transport).create(model="structured-aux/approval", messages=approval_messages)
+
+    assert response.usage == {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
+
+
+def test_client_declares_wrapper_opt_outs(shim, make_transport):
+    # Read by agent.auxiliary_client._client_declares; without these the client is
+    # re-dispatched through an HTTP wire adapter.
+    client = shim(make_transport())
+    assert client.HERMES_SKIP_TRANSPORT_WRAP is True
+    assert client.HERMES_SKIP_ASYNC_WRAP is True
+
+
+def test_client_exposes_the_chat_completions_surface(shim, make_transport):
+    assert callable(shim(make_transport()).chat.completions.create)

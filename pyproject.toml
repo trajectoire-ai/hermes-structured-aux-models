@@ -6,9 +6,12 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Trajectoire AI" }]
-# Intentionally dependency-free: the decision transport uses urllib from the
+# Intentionally dependency-free at runtime: the decision transport uses urllib from the
 # standard library, and schema validation reuses Hermes' own optional jsonschema.
 dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
 
 [project.urls]
 Homepage = "https://github.com/trajectoire-ai/hermes-structured-aux-models"
@@ -16,3 +19,4 @@ Issues = "https://github.com/trajectoire-ai/hermes-structured-aux-models/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-q"

@@ -70,6 +70,9 @@ and `structured-aux-approval` are accepted too. The approval contract additional
 recognises Hermes' guardian prompt by its wording, so it still routes if you leave the
 model blank.
 
+That string is a **routing token, not a model id**. It never reaches OpenRouter — the
+Jev model actually sent to the decisions endpoint is `decision_model` below.
+
 ### Credential
 
 Only `OPENROUTER_API_KEY` is used. It is read from the process environment, falling
@@ -83,7 +86,7 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | Key | Default | Meaning |
 |---|---|---|
 | `tasks` | `[approval, mcp, compression]` | which task keys this provider may serve |
-| `decision_model` | `typesafe/jev-1.13` | Jev model id sent to OpenRouter |
+| `decision_model` | `~typesafe/jev-latest` | Jev model id sent to OpenRouter. The `~` prefix marks a moving alias, so the default tracks the newest Jev release instead of a dated id that has to be bumped by hand. Pin an exact version here if you need reproducibility. |
 | `decision_base_url` | `https://openrouter.ai` | must be HTTPS |
 | `timeout_seconds` | `15.0` | per decision request |
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
@@ -142,13 +145,24 @@ to disk by this plugin; nothing is persisted outside Hermes' own logs.
 
 ## Testing
 
+Install the dev extra declared in `pyproject.toml`
+(`[project.optional-dependencies] dev`), then:
+
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m compileall -q .
+python -m pytest
 ```
 
 The suite is fully offline — every test injects a fake transport, and no test makes a
 network call. A live provider run requires explicit operator approval.
+
+Two things about the layout are worth knowing before you touch the tests:
+
+- The repository root is a Python package (Hermes requires `__init__.py` there), so a
+  test collector imports the plugin entry point from outside the Hermes runtime. That
+  entry point therefore tolerates a missing `providers` module; inside Hermes the import
+  always succeeds and registration always runs.
+- `tests/conftest.py` holds every fixture. Fake transports record calls as
+  `{"url", "headers", "body", "timeout"}`, so assert on `transport.calls[0]["body"]`.
 
 ## How it works
 

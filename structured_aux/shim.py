@@ -189,21 +189,20 @@ class StructuredAuxClient:
 
     # -- task handlers -----------------------------------------------------------
 
-    def _approval(self, messages: Any, model: str) -> _Response:
+    def _approval(self, messages: Any) -> _Response:
         system_text, user_text = _split_messages(messages)
         if not user_text.strip():
             raise UnsupportedRequest("approval request carried no command text")
         result = self._decision_client().ask(
             state={"request": user_text, "guardian_policy": system_text},
             questions=contracts.approval_questions(),
-            model=model or None,
         )
         verdict = result.label("verdict", contracts.APPROVAL_LABELS)
         return self._response(
             content=verdict, model=result.model, usage=result.usage, request_id=result.request_id
         )
 
-    def _mcp(self, messages: Any, tools: Any, model: str) -> _Response:
+    def _mcp(self, messages: Any, tools: Any) -> _Response:
         candidates = _tool_candidates(tools)
         if len(candidates) < 2:
             raise UnsupportedRequest(
@@ -214,7 +213,6 @@ class StructuredAuxClient:
         result = self._decision_client().ask(
             state={"request": user_text, "available_tools": candidates},
             questions=contracts.mcp_tool_questions(candidates),
-            model=model or None,
         )
         chosen = result.label("tool", tuple(candidates))
         return self._response(
@@ -227,17 +225,23 @@ class StructuredAuxClient:
             ],
         )
 
-    def _compression(self, messages: Any, model: str) -> _Response:
+    def _compression(self, messages: Any) -> _Response:
         _, prompt = _split_messages(messages)
         if not prompt.strip():
             raise UnsupportedRequest("compression request carried no text")
-        digest = compression.compress(self._decision_client(), prompt, model=model)
-        return self._response(content=digest, model=model, usage={})
+        digest = compression.compress(self._decision_client(), prompt, model=config.decision_model())
+        return self._response(content=digest, model=config.decision_model(), usage={})
 
     # -- entry point -------------------------------------------------------------
 
     def create(self, **kwargs: Any) -> _Response:
-        """Answer one auxiliary call, or raise to hand it back to Hermes."""
+        """Answer one auxiliary call, or raise to hand it back to Hermes.
+
+        ``kwargs["model"]`` is the operator's routing token (``structured-aux/<task>``)
+        written into ``auxiliary.<task>.model``. It selects a contract and is never sent
+        to the decision provider as a model id — the Jev model comes from the plugin's
+        own ``decision_model`` setting.
+        """
         if kwargs.get("stream"):
             raise UnsupportedRequest("structured-aux does not serve streaming requests")
 
@@ -250,9 +254,9 @@ class StructuredAuxClient:
             )
 
         if task == contracts.TASK_APPROVAL:
-            return self._approval(messages, model)
+            return self._approval(messages)
         if task == contracts.TASK_MCP:
-            return self._mcp(messages, kwargs.get("tools"), model)
+            return self._mcp(messages, kwargs.get("tools"))
         if task == contracts.TASK_COMPRESSION:
-            return self._compression(messages, model)
+            return self._compression(messages)
         raise UnsupportedRequest(f"no handler registered for task {task!r}")

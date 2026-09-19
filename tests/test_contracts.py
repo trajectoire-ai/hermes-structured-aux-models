@@ -2,79 +2,73 @@
 
 from __future__ import annotations
 
-import unittest
-
-from helpers import make_transport  # noqa: F401  (ensures repo root is on sys.path)
+import pytest
 
 from structured_aux import contracts
 
 
-class DetectTaskTests(unittest.TestCase):
-    def test_model_id_slash_form(self):
-        self.assertEqual(contracts.detect_task("structured-aux/approval", []), "approval")
-        self.assertEqual(contracts.detect_task("structured-aux/compression", []), "compression")
-        self.assertEqual(contracts.detect_task("structured-aux/mcp", []), "mcp")
-
-    def test_model_id_colon_and_dot_forms(self):
-        self.assertEqual(contracts.detect_task("structured-aux:approval", []), "approval")
-        self.assertEqual(contracts.detect_task("structured-aux.compression", []), "compression")
-
-    def test_model_id_hyphen_form(self):
-        self.assertEqual(contracts.detect_task("structured-aux-mcp", []), "mcp")
-        self.assertEqual(contracts.detect_task("structured_aux_approval", []), "approval")
-
-    def test_bare_task_name(self):
-        self.assertEqual(contracts.detect_task("approval", []), "approval")
-
-    def test_unknown_model_is_not_served(self):
-        self.assertIsNone(contracts.detect_task("gpt-4o", []))
-        self.assertIsNone(contracts.detect_task("typesafe/jev-1.13", []))
-        self.assertIsNone(contracts.detect_task("", []))
-
-    def test_content_fallback_for_approval_only(self):
-        messages = [{"role": "user", "content": "Respond with exactly one word: APPROVE, DENY, or ESCALATE"}]
-        self.assertEqual(contracts.detect_task("", messages), "approval")
-
-    def test_content_fallback_does_not_hijack_other_tasks(self):
-        messages = [{"role": "user", "content": "Summarise the following conversation transcript."}]
-        self.assertIsNone(contracts.detect_task("", messages))
-
-    def test_unrelated_task_name_is_not_served(self):
-        # skills_hub is deliberately out of scope: Hermes has no call site for it.
-        self.assertIsNone(contracts.detect_task("structured-aux/skills_hub", []))
+@pytest.mark.parametrize(
+    "model_id,expected",
+    [
+        ("structured-aux/approval", "approval"),
+        ("structured-aux/compression", "compression"),
+        ("structured-aux/mcp", "mcp"),
+        ("structured-aux:approval", "approval"),
+        ("structured-aux.compression", "compression"),
+        ("structured-aux-mcp", "mcp"),
+        ("structured_aux_approval", "approval"),
+        ("approval", "approval"),
+    ],
+)
+def test_detect_task_from_model_id(model_id, expected):
+    assert contracts.detect_task(model_id, []) == expected
 
 
-class ApprovalContractTests(unittest.TestCase):
-    def test_question_is_a_bounded_choice(self):
-        questions = contracts.approval_questions()
-        self.assertEqual(list(questions), ["verdict"])
-        verdict = questions["verdict"]
-        self.assertEqual(verdict["type"], "choice")
-        self.assertEqual(set(verdict["criteria"]), set(contracts.APPROVAL_LABELS))
-        self.assertGreaterEqual(len(verdict["criteria"]), 2)
-
-    def test_labels_cover_escalation(self):
-        # Hermes maps any unrecognised guardian answer to "escalate"; the contract must
-        # express that outcome explicitly rather than collapsing it into a refusal.
-        self.assertIn("ESCALATE", contracts.APPROVAL_LABELS)
+@pytest.mark.parametrize("model_id", ["gpt-4o", "typesafe/jev-1.13", "~typesafe/jev-latest", ""])
+def test_unknown_model_is_not_served(model_id):
+    assert contracts.detect_task(model_id, []) is None
 
 
-class McpContractTests(unittest.TestCase):
-    def test_choice_over_candidates(self):
-        candidates = {"read_file": "Read a file", "search": "Search text"}
-        questions = contracts.mcp_tool_questions(candidates)
-        self.assertEqual(questions["tool"]["type"], "choice")
-        self.assertEqual(set(questions["tool"]["criteria"]), set(candidates))
+def test_content_fallback_for_approval_only():
+    messages = [{"role": "user", "content": "Respond with exactly one word: APPROVE, DENY, or ESCALATE"}]
+    assert contracts.detect_task("", messages) == "approval"
 
 
-class CompressionContractTests(unittest.TestCase):
-    def test_one_question_per_block(self):
-        questions = contracts.compression_questions(["block_0", "block_1", "block_2"])
-        self.assertEqual(list(questions), ["block_0", "block_1", "block_2"])
-        for question in questions.values():
-            self.assertEqual(question["type"], "choice")
-            self.assertEqual(set(question["criteria"]), set(contracts.COMPRESSION_LABELS))
+def test_content_fallback_does_not_hijack_other_tasks():
+    messages = [{"role": "user", "content": "Summarise the following conversation transcript."}]
+    assert contracts.detect_task("", messages) is None
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_out_of_scope_task_is_not_served():
+    # skills_hub is deliberately out of scope: Hermes has no call site for it.
+    assert contracts.detect_task("structured-aux/skills_hub", []) is None
+
+
+def test_approval_question_is_a_bounded_choice():
+    questions = contracts.approval_questions()
+    assert list(questions) == ["verdict"]
+    verdict = questions["verdict"]
+    assert verdict["type"] == "choice"
+    assert set(verdict["criteria"]) == set(contracts.APPROVAL_LABELS)
+    assert len(verdict["criteria"]) >= 2
+
+
+def test_approval_labels_cover_escalation():
+    # Hermes maps any unrecognised guardian answer to "escalate"; the contract must
+    # express that outcome explicitly rather than collapsing it into a refusal.
+    assert "ESCALATE" in contracts.APPROVAL_LABELS
+
+
+def test_mcp_question_is_a_choice_over_candidates():
+    candidates = {"read_file": "Read a file", "search": "Search text"}
+    questions = contracts.mcp_tool_questions(candidates)
+    assert questions["tool"]["type"] == "choice"
+    assert set(questions["tool"]["criteria"]) == set(candidates)
+
+
+def test_compression_asks_one_question_per_block():
+    questions = contracts.compression_questions(["block_0", "block_1", "block_2"])
+    assert list(questions) == ["block_0", "block_1", "block_2"]
+    for question in questions.values():
+        assert question["type"] == "choice"
+        assert set(question["criteria"]) == set(contracts.COMPRESSION_LABELS)

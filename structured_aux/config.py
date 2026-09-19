@@ -22,7 +22,10 @@ PROVIDER_NAME = "structured-aux"
 
 DEFAULT_BASE_URL = "https://openrouter.ai"
 DEFAULT_PATH = "/api/alpha/decisions"
-DEFAULT_MODEL = "typesafe/jev-1.13"
+# The `~` prefix marks a moving alias, so the default tracks the newest Jev release
+# instead of pinning a dated version that has to be bumped by hand. Operators can pin
+# an exact id with plugins.entries.<PLUGIN_ID>.settings.decision_model.
+DEFAULT_MODEL = "~typesafe/jev-latest"
 CREDENTIAL_ENV_VAR = "OPENROUTER_API_KEY"
 
 # Task -> the model id suffix an operator writes into auxiliary.<task>.model.
