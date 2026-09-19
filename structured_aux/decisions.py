@@ -92,6 +92,11 @@ def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: f
     if not url.startswith("https://"):
         raise DecisionError("decision transport refuses a non-HTTPS URL")
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    # urllib title-cases every header name it is handed, which would put
+    # `Http-referer` / `X-openrouter-title` on the wire. Headers are case-insensitive,
+    # but send OpenRouter's attribution headers with the spelling its docs use so the
+    # request is recognisable in a capture or a support thread.
+    request.headers = {name: value for name, value in headers.items()}
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - https enforced above
             return int(response.status), response.read(), dict(response.headers.items())
@@ -152,6 +157,8 @@ class DecisionClient:
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
+            "HTTP-Referer": config.app_referer(),
+            "X-OpenRouter-Title": config.app_title(),
         }
 
         started = time.monotonic()

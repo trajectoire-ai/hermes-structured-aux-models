@@ -88,11 +88,22 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | `tasks` | `[approval, mcp, compression]` | which task keys this provider may serve |
 | `decision_model` | `~typesafe/jev-latest` | Jev model id sent to OpenRouter. The `~` prefix marks a moving alias, so the default tracks the newest Jev release instead of a dated id that has to be bumped by hand. Pin an exact version here if you need reproducibility. |
 | `decision_base_url` | `https://openrouter.ai` | must be HTTPS |
+| `app_referer` | `https://trajectoire.ai` | OpenRouter `HTTP-Referer`. The app's primary attribution identifier. |
+| `app_title` | `hermes-structured-aux` | OpenRouter `X-OpenRouter-Title`. The app's display name in rankings. |
 | `timeout_seconds` | `15.0` | per decision request |
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
 | `compression_blocks_per_call` | `16` | blocks asked about per provider call |
 | `compression_output_budget_chars` | `6000` | digest size ceiling |
 | `compression_min_block_chars` | `120` | minimum size before a block is closed |
+
+### App attribution
+
+Every decision request carries OpenRouter's [app
+attribution](https://openrouter.ai/docs/app-attribution) headers: `HTTP-Referer:
+https://trajectoire.ai` — the value OpenRouter keys the app's page and rankings on — and
+`X-OpenRouter-Title: hermes-structured-aux`, its display name. Without a `HTTP-Referer`,
+OpenRouter files the usage under "Unknown" and no app page is created. Both are plain,
+non-secret strings; override them with `app_referer` and `app_title` above.
 
 ## Per-task behaviour
 

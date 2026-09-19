@@ -123,3 +123,62 @@ def test_confidence_falls_back_to_chosen_probability(client, make_transport):
     transport = make_transport(answers={"verdict": {"choice": "DENY", "probabilities": {"DENY": 0.42}}})
     result = client(transport).ask(state={}, questions=QUESTIONS)
     assert result.confidence("verdict") == pytest.approx(0.42)
+
+
+def test_attribution_headers_are_sent(client, make_transport, choice):
+    # OpenRouter attributes usage to an app by HTTP-Referer; without it the app shows as
+    # "Unknown" and its usage is not listed. X-OpenRouter-Title names it.
+    transport = make_transport(answers={"verdict": choice("APPROVE")})
+    client(transport).ask(state={}, questions=QUESTIONS)
+
+    headers = transport.calls[0]["headers"]
+    assert headers["HTTP-Referer"] == "https://trajectoire.ai"
+    assert headers["X-OpenRouter-Title"] == "hermes-structured-aux"
+
+
+def test_attribution_headers_can_be_overridden(client, make_transport, choice, monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_raw_settings",
+        lambda: {"app_referer": "https://example.test/app", "app_title": "Example App"},
+    )
+    transport = make_transport(answers={"verdict": choice("APPROVE")})
+    client(transport).ask(state={}, questions=QUESTIONS)
+
+    headers = transport.calls[0]["headers"]
+    assert headers["HTTP-Referer"] == "https://example.test/app"
+    assert headers["X-OpenRouter-Title"] == "Example App"
+
+
+def test_default_transport_keeps_documented_header_casing(monkeypatch):
+    # urllib title-cases header names; the attribution headers must still go out with the
+    # spelling OpenRouter documents.
+    seen: dict[str, str] = {}
+
+    class _Response:
+        status = 200
+        headers: dict[str, str] = {}
+
+        def read(self) -> bytes:
+            return b"{}"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen.update(dict(request.header_items()))
+        return _Response()
+
+    monkeypatch.setattr(decisions.urllib.request, "urlopen", fake_urlopen)
+    decisions._urllib_transport(
+        "https://example.invalid/decisions",
+        {"HTTP-Referer": "https://trajectoire.ai", "X-OpenRouter-Title": "hermes-structured-aux"},
+        b"{}",
+        1.0,
+    )
+
+    assert seen["HTTP-Referer"] == "https://trajectoire.ai"
+    assert seen["X-OpenRouter-Title"] == "hermes-structured-aux"

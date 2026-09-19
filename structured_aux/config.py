@@ -22,6 +22,12 @@ PROVIDER_NAME = "structured-aux"
 
 DEFAULT_BASE_URL = "https://openrouter.ai"
 DEFAULT_PATH = "/api/alpha/decisions"
+# OpenRouter app attribution (https://openrouter.ai/docs/app-attribution): HTTP-Referer
+# is the primary app identifier (without it the app shows as "Unknown" and its usage is
+# not attributed), X-OpenRouter-Title sets the display name. Both are plain, non-secret
+# strings, so they are defaults rather than required configuration.
+DEFAULT_APP_REFERER = "https://trajectoire.ai"
+DEFAULT_APP_TITLE = "hermes-structured-aux"
 # The `~` prefix marks a moving alias, so the default tracks the newest Jev release
 # instead of pinning a dated version that has to be bumped by hand. Operators can pin
 # an exact id with plugins.entries.<PLUGIN_ID>.settings.decision_model.
@@ -37,6 +43,8 @@ _DEFAULTS: dict[str, Any] = {
     "decision_model": DEFAULT_MODEL,
     "decision_base_url": DEFAULT_BASE_URL,
     "decision_path": DEFAULT_PATH,
+    "app_referer": DEFAULT_APP_REFERER,
+    "app_title": DEFAULT_APP_TITLE,
     "timeout_seconds": 15.0,
     "compression_blocks_per_call": 16,
     "compression_max_blocks": 48,
@@ -110,6 +118,16 @@ def decision_base_url() -> str:
 def decision_path() -> str:
     path = str(_raw_settings().get("decision_path") or _DEFAULTS["decision_path"]).strip()
     return path if path.startswith("/") else "/" + path
+
+
+def app_referer() -> str:
+    """The OpenRouter ``HTTP-Referer`` value: the app's primary identifier."""
+    return str(_raw_settings().get("app_referer") or _DEFAULTS["app_referer"]).strip()
+
+
+def app_title() -> str:
+    """The OpenRouter ``X-OpenRouter-Title`` value: the app's display name."""
+    return str(_raw_settings().get("app_title") or _DEFAULTS["app_title"]).strip()
 
 
 def timeout_seconds() -> float:
