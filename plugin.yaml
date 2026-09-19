@@ -1,0 +1,8 @@
+name: hermes-structured-structure-aux-models
+kind: model-provider
+version: "0.1.0"
+description: "Routes selected Hermes auxiliary tasks through bounded Jev decision calls on OpenRouter instead of free-form chat prompts."
+author: "Trajectoire AI"
+license: MIT
+homepage: https://github.com/trajectoire-ai/hermes-structured-structure-aux-models
+tags: [provider, auxiliary, decisions, openrouter, typesafe, jev, structured-output, compression, approval, mcp]

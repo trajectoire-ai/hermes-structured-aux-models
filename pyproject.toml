@@ -1,0 +1,18 @@
+[project]
+name = "hermes-structured-structure-aux-models"
+version = "0.1.0"
+description = "Routes selected Hermes auxiliary tasks through bounded Jev decision calls on OpenRouter instead of free-form chat prompts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Trajectoire AI" }]
+# Intentionally dependency-free: the decision transport uses urllib from the
+# standard library, and schema validation reuses Hermes' own optional jsonschema.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/trajectoire-ai/hermes-structured-structure-aux-models"
+Issues = "https://github.com/trajectoire-ai/hermes-structured-structure-aux-models/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
