@@ -43,6 +43,14 @@ references were true against Hermes `v0.21.0`.
   `submodule_search_locations=[plugin_dir]`, so the plugin root is a real package and
   relative imports work. `plugin.yaml` must declare `kind: model-provider` to be
   discovered from the flat `$HERMES_HOME/plugins/<name>/` install location.
+- Provider discovery is **process-global and runs once per process** (`providers._discovered`)
+  at process start, scanning `get_hermes_home()/plugins/` at that moment. It never re-runs when
+  the machine-level `hermes serve` backend binds a session's profile `HERMES_HOME` later
+  (`tui_gateway/server.py`). So a plugin installed only under `profiles/<p>/plugins/` is
+  invisible to a root-home `serve`, and its aux calls fail with `Provider 'structured-aux' is
+  set in config.yaml but no API key was found`. Install into the `HERMES_HOME` the consuming
+  process starts with (profile for `hermes -p <p>` CLI/gateway, root for bare `hermes serve`);
+  see README → Install → "Where to install".
 - `hermes_cli/auth.py:_register_plugin_provider` adds an `external_process` profile to
   `PROVIDER_REGISTRY`, which is what makes `auxiliary.<task>.provider` resolvable.
 - `agent/auxiliary_client.py:_resolve_external_process_branch` is the **only** branch

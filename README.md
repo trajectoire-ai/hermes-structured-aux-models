@@ -43,11 +43,47 @@ hermes plugins install trajectoire-ai/hermes-structured-aux-models
 The tree scans clean under Hermes' install-time plugin scanner
 (`tools/plugin_guard.py`): verdict `safe`, no findings.
 
-Then confirm the provider registered:
+Confirm the provider actually registered. `hermes doctor` reports a **false** error for
+model-provider plugins (`Plugin registration failed: no register() function`) — they
+self-register at import and have no `register()`, so ignore that line. Check the way that
+matters instead, in a fresh process under the target `HERMES_HOME`:
 
 ```bash
-hermes doctor
+HERMES_HOME=<home> python -c "
+from agent import auxiliary_client as A
+c, m = A.resolve_provider_client('structured-aux', 'structured-aux/approval')
+print(type(c).__name__, m, bool(getattr(c, 'api_key', '')))"
 ```
+
+A `StructuredAuxClient` with a non-empty key is the proof. Anything else means the plugin
+is not reachable from that home — see below.
+
+### Where to install
+
+Hermes discovers provider plugins **once per process, at process start**, by scanning
+`$HERMES_HOME/plugins/`. Discovery is process-global and memoized: it does not re-run when a
+session later switches profiles. So the plugin must live in the `HERMES_HOME` that the
+**process making the auxiliary calls** starts with:
+
+| Consuming process | `HERMES_HOME` at start | Install into |
+|---|---|---|
+| Profile-scoped CLI or messaging gateway (`hermes -p <p> …`) | `~/.hermes/profiles/<p>` | the profile: `hermes -p <p> plugins install …` |
+| Machine-level desktop / remote backend (`hermes serve`, no profile) | `~/.hermes` (root) | the root home: `hermes plugins install …` |
+
+The machine-level `hermes serve` backend is the easy one to get wrong: it is started once
+with the **root** home and only binds a session's profile `HERMES_HOME` later, when it builds
+that session's agent. A plugin installed only under `profiles/<p>/plugins/` is therefore
+never imported by it — even though that same profile's CLI and gateway resolve it fine.
+
+Symptoms of installing into the wrong home:
+
+- `Auxiliary …: using openai-codex (…)` / any provider other than `using structured-aux (structured-aux/<task>)`;
+- `Smart approvals: LLM call failed … (RuntimeError: Provider 'structured-aux' is set in config.yaml but no API key was found …), escalating`;
+- no app page appears at `https://openrouter.ai/apps?url=https://trajectoire.ai`.
+
+If one machine runs both a profile-scoped gateway **and** a machine-level `serve`, install in
+**both** homes. Then restart every long-lived process that makes auxiliary calls: discovery is
+memoized, so a process started before the install keeps its old registry until it restarts.
 
 ## Configure
 
