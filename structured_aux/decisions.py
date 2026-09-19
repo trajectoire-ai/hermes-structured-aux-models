@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from . import config, privacy
 
-USER_AGENT = "hermes-structured-structure-aux-models/0.1.0"
+USER_AGENT = "hermes-structured-aux-models/0.1.0"
 
 # (url, headers, body, timeout) -> (status, body_bytes, response_headers)
 Transport = Callable[[str, dict[str, str], bytes, float], tuple]

@@ -1,4 +1,4 @@
-# hermes-structured-structure-aux-models
+# hermes-structured-aux-models
 
 A Hermes Agent **model-provider plugin** that routes selected auxiliary tasks through
 bounded [Jev](https://openrouter.ai) **decision calls** on OpenRouter instead of
@@ -37,7 +37,7 @@ call site to intercept. It will be revisited if Hermes wires one.
 ## Install
 
 ```bash
-hermes plugins install trajectoire-ai/hermes-structured-structure-aux-models
+hermes plugins install trajectoire-ai/hermes-structured-aux-models
 ```
 
 The tree scans clean under Hermes' install-time plugin scanner
@@ -78,7 +78,7 @@ forwarded anywhere except the OpenRouter decisions endpoint.
 
 ### Plugin settings
 
-Optional, under `plugins.entries.hermes-structured-structure-aux-models.settings`:
+Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 
 | Key | Default | Meaning |
 |---|---|---|

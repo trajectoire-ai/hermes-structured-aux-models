@@ -1,4 +1,4 @@
-# Agent instructions — hermes-structured-structure-aux-models
+# Agent instructions — hermes-structured-aux-models
 
 Instructions for agents working in this repository.
 
@@ -68,7 +68,7 @@ python3 -m compileall -q .
 
 ## Delivery
 
-- Remote is GitHub (`trajectoire-ai/hermes-structured-structure-aux-models`), HTTPS only.
+- Remote is GitHub (`trajectoire-ai/hermes-structured-aux-models`), HTTPS only.
 - Commit identity is `trajectoire-regis[bot] <325471804+trajectoire-regis[bot]@users.noreply.github.com>`.
 - Authenticate Git with the profile-local `gh auth git-credential` helper. Never put a
   token in a remote URL.

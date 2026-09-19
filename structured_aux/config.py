@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-PLUGIN_ID = "hermes-structured-structure-aux-models"
+PLUGIN_ID = "hermes-structured-aux-models"
 PROVIDER_NAME = "structured-aux"
 
 DEFAULT_BASE_URL = "https://openrouter.ai"
