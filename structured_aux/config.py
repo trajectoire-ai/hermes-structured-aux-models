@@ -53,6 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "compression_max_blocks": 48,
     "compression_output_budget_chars": 6000,
     "compression_min_block_chars": 120,
+    "compression_call_budget_tokens": 8000,
 }
 
 _cache: dict[str, Any] | None = None
@@ -151,6 +152,17 @@ def compression_output_budget_chars() -> int:
 
 def compression_min_block_chars() -> int:
     return max(1, _as_int(_raw_settings().get("compression_min_block_chars"), _DEFAULTS["compression_min_block_chars"]))
+
+
+def compression_call_budget_tokens() -> int:
+    """Estimated-token ceiling for one decision call.
+
+    Jev's window is 32,000 tokens, so this is capped below it: a call that exceeded the
+    window could not be answered at all, and the whole point of the budget is that a
+    compression prompt of any size is served in however many calls fit.
+    """
+    value = _as_int(_raw_settings().get("compression_call_budget_tokens"), _DEFAULTS["compression_call_budget_tokens"])
+    return min(28000, max(1000, value))
 
 
 def _dotenv_value(name: str) -> str:
