@@ -25,6 +25,11 @@ real auxiliary provider.
 - **Fail open, never fail closed.** If the request cannot be expressed as a decision,
   or the provider errors, raise `UnsupportedRequest` / let the transport error
   propagate. Hermes' auxiliary fallback then does its job. Never invent an answer.
+  *Transient* transport failures are the one deliberate exception: `DecisionClient.ask`
+  retries them up to `decision_max_attempts` (3) before propagating, because Hermes does
+  **not** retry a critical-path auxiliary call — on a compression timeout it skips its own
+  same-provider retry and falls back to the main model, which replaces the extractive digest
+  with prose. Retry the *transport*, never the answer: a contract failure is not retried.
 - **Never fabricate a decision.** If the provider returns a label outside the
   contract's criteria set, raise. Do not map unknown labels onto a default.
 - **Keep the tree clean for Hermes' install-time plugin scanner** (`tools/plugin_guard.py`):

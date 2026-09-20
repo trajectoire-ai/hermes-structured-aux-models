@@ -127,6 +127,31 @@ def test_default_budget_comes_from_the_configured_setting(monkeypatch):
     assert len(compression.build_digest(blocks, [True] * 10)) <= 1200
 
 
+def test_the_failing_compression_call_is_named_in_the_log(caplog):
+    # A compaction prompt is served by several decision calls, so an error has to say which
+    # one failed — that is the first question anyone asks of the log.
+    from structured_aux.decisions import DecisionResult
+
+    class _FailingOnSecondCall:
+        def __init__(self):
+            self.n = 0
+
+        def ask(self, *, state, questions, model=None):
+            self.n += 1
+            if self.n == 2:
+                raise RuntimeError("decision provider connection failed: The read operation timed out")
+            return DecisionResult(
+                answers={name: {"choice": "KEEP"} for name in questions},
+                model="m", usage={}, request_id="x", latency_ms=1.0,
+            )
+
+    with caplog.at_level("ERROR"), pytest.raises(RuntimeError):
+        compression.select(_FailingOnSecondCall(), ["a" * 500, "b" * 500], blocks_per_call=1, budget_tokens=1000)
+
+    errors = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    assert any("compression decision call 2/2 failed" in message for message in errors)
+
+
 def test_shipped_digest_budget_matches_the_documented_default():
     # The shipped ceiling is what the README's settings table advertises; pin it so the two
     # cannot drift. Raise both together when it changes.

@@ -227,6 +227,8 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | `app_title` | `hermes-structured-aux` | OpenRouter `X-OpenRouter-Title`. The app's display name in rankings. |
 | `credential_pool_provider` | `openrouter` | provider key whose Hermes credential-pool entry supplies the decision credential, when `OPENROUTER_API_KEY` is not set in the environment or the profile `.env` |
 | `timeout_seconds` | `15.0` | per decision request |
+| `decision_max_attempts` | `3` | total attempts for one decision request, first try included; a transient failure is retried, a payload/credential/contract failure is not |
+| `decision_retry_backoff_seconds` | `0.5` | base delay before a retry; doubles per attempt (0.5 s, then 1.0 s) |
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
 | `compression_blocks_per_call` | `16` | blocks asked about per provider call |
 | `compression_call_budget_tokens` | `8000` | estimated-token ceiling for one decision call; capped at `28000` so no call can exceed Jev's 32,000-token window |
@@ -289,6 +291,37 @@ Three invariants matter here:
   call is a separate decision, so the digest is assembled from however many chunks came back;
   `compression_output_budget_chars` (18,000 by default) only has to stay smaller than the
   turns it replaces, and Hermes injects the result as the session's context summary.
+
+## Retries and logging
+
+A decision request that fails **transiently** — a connection error, a read timeout, or a
+retryable HTTP status (`408, 425, 429, 5xx`) — is retried up to `decision_max_attempts` (3 by
+default) with a doubling backoff (`0.5 s`, then `1.0 s`). Failures the provider has already
+judged are **not** retried: any other HTTP status, a non-JSON body, missing answers, or an
+out-of-contract label. Repeating those only repeats the same answer.
+
+The retry exists because Hermes will not do it for you. A compression call is critical-path
+work, so on a full-budget timeout Hermes **skips its own same-provider retry and falls back to
+your main model** — one stalled decision call turns a compaction into a prose summary and
+loses the extractive guarantee. A second attempt inside the plugin is the cheap way to keep
+the digest.
+
+Failures are logged with enough context to find them, and no payload or credential is ever in
+the message:
+
+| Line | Level | Says |
+|---|---|---|
+| `decision call failed transiently: attempt 1/3 after 15041 ms (model=…, questions=16, status=-), retrying in 0.5 s: …` | WARNING | one attempt of three failed and why |
+| `decision call recovered on attempt 2/3 after 812 ms …` | WARNING | the retry worked — this call was slow/flaky and is worth knowing about |
+| `decision call slow: 7400 ms for attempt 1/3 …` | WARNING | a call over half its timeout that still succeeded: the shape of a stall before it costs you the digest |
+| `decision call failed: attempt 3/3 after 45032 ms (model=…, questions=16, status=503): …` | ERROR | all attempts spent; Hermes will fall back |
+| `compression plan: 3 block(s), 3 piece(s), 3 decision call(s), ~21000 estimated payload tokens` | DEBUG | how many calls this compaction will take |
+| `compression decision call 2/3 failed (16 question(s), ~8000 estimated payload tokens): …` | ERROR | **which** call of the batch failed |
+| `decision call answered in 412 ms on attempt 1/3 …` | DEBUG | per-call latency, for the healthy case |
+
+WARNING and ERROR land in `errors.log` (and `agent.log`); DEBUG needs a verbose log level
+(`hermes logs --level debug`). `hermes logs --follow` while a compaction runs is the way to
+watch a flaky provider.
 
 ## Cost posture
 

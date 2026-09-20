@@ -110,6 +110,44 @@ def fake_client():
     return build
 
 
+@pytest.fixture(autouse=True)
+def _fast_retry_backoff(monkeypatch):
+    """Keep the retry path exercised but the suite fast: real delays are 0.5 s, 1.0 s.
+
+    The schedule itself is asserted in ``test_decisions.test_retry_backoff_doubles_per_attempt``,
+    which re-pins a non-zero base.
+    """
+    from structured_aux import config
+
+    monkeypatch.setattr(config, "decision_retry_backoff_seconds", lambda: 0.0)
+
+
+@pytest.fixture
+def flaky_transport(make_transport):
+    """Factory for a transport that fails transiently for its first ``failures`` calls."""
+
+    from structured_aux.decisions import DecisionError
+
+    def build(*, failures=1, answers=None, retryable=True, status=None):
+        ok = make_transport(answers=answers or {})
+        attempts: list[int] = []
+
+        def transport(url, headers, body_bytes, timeout):
+            attempts.append(len(attempts) + 1)
+            if len(attempts) <= failures:
+                raise DecisionError(
+                    "decision provider connection failed: The read operation timed out",
+                    retryable=retryable,
+                    status=status,
+                )
+            return ok(url, headers, body_bytes, timeout)
+
+        transport.attempts = attempts
+        return transport
+
+    return build
+
+
 @pytest.fixture
 def shim():
     """Factory for a ``StructuredAuxClient`` wired to a fake transport."""

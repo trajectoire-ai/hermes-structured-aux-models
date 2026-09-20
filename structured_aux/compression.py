@@ -12,9 +12,12 @@ invent a replacement for something it dropped.
 
 from __future__ import annotations
 
+import logging
 import re
 
 from . import config, contracts
+
+logger = logging.getLogger("structured_aux.compression")
 
 DIGEST_HEADER = "[structured-aux extractive digest]"
 
@@ -205,14 +208,34 @@ def select(
         names_by_block.append(names)
 
     kept: dict[str, bool] = {}
-    for call in _pack_calls(items, blocks_per_call, budget_tokens):
+    calls = _pack_calls(items, blocks_per_call, budget_tokens)
+    payload_tokens = sum(estimate_tokens(text) + _QUESTION_OVERHEAD_TOKENS for _, _, text in items)
+    logger.debug(
+        "compression plan: %d block(s), %d piece(s), %d decision call(s), ~%d estimated payload tokens",
+        len(blocks), len(items), len(calls), payload_tokens,
+    )
+    for index, call in enumerate(calls, start=1):
         names = [name for _, name, _ in call]
         questions = contracts.compression_questions(names)
         state = {
             "retention_goal": state_goal or "Preserve the smallest sufficient working set for correct continuation.",
             "blocks": [{"id": name, "text": text} for _, name, text in call],
         }
-        result = client.ask(state=state, questions=questions)
+        call_tokens = sum(estimate_tokens(text) + _QUESTION_OVERHEAD_TOKENS for _, _, text in call)
+        try:
+            result = client.ask(state=state, questions=questions)
+        except Exception as exc:
+            # Name the failing call: a compaction prompt is served by several calls, and
+            # "which one stalled" is the first question anyone asks of the log.
+            logger.error(
+                "compression decision call %d/%d failed (%d question(s), ~%d estimated payload tokens): %s",
+                index, len(calls), len(names), call_tokens, exc,
+            )
+            raise
+        logger.debug(
+            "compression decision call %d/%d answered: %d question(s), ~%d estimated payload tokens",
+            index, len(calls), len(names), call_tokens,
+        )
         for name in names:
             kept[name] = result.label(name, contracts.COMPRESSION_LABELS) == "KEEP"
 
