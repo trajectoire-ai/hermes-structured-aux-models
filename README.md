@@ -291,6 +291,16 @@ Three invariants matter here:
   call is a separate decision, so the digest is assembled from however many chunks came back;
   `compression_output_budget_chars` (18,000 by default) only has to stay smaller than the
   turns it replaces, and Hermes injects the result as the session's context summary.
+- A digest that runs out of budget never loses text silently. While the retained blocks fit,
+  they are carried wholesale. Once they do not, each still to come keeps its place: the budget
+  left is not spent in prompt order, so an early block cannot take a late block's space, and
+  the whole transcript prompt is oldest-first — spending in order starves exactly the newest
+  rounds. Any block not carried in full ends with
+  `…[truncated: KEPT of TOTAL chars retained; recover the rest with session_search]`, cut after
+  a whole line where one exists, and a block that could not be announced at all is counted in
+  `…[N retained block(s) did not fit the …-char digest budget …]`. The header, those markers,
+  and the `--- block N ---` labels are the only text the plugin writes; everything else is
+  verbatim.
 
 ## Retries and logging
 

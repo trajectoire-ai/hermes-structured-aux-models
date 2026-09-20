@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -125,6 +126,85 @@ def test_default_budget_comes_from_the_configured_setting(monkeypatch):
     blocks = [f"block-{i}-" + ("x" * 500) for i in range(10)]
 
     assert len(compression.build_digest(blocks, [True] * 10)) <= 1200
+
+
+def test_a_binding_budget_still_carries_every_retained_block():
+    # The budget runs out on the newest blocks first (the prompt is oldest-first), so a
+    # digest that spends it in order silently drops the rounds a continuation needs.
+    # Shares keep every retained block in the digest, each carrying its own marker.
+    blocks = [f"block-{i}-" + ("x" * 500) for i in range(6)]
+
+    digest = compression.build_digest(blocks, [True] * 6, budget_chars=3000)
+
+    assert len(digest) <= 3000
+    assert [f"--- block {i} ---" in digest for i in range(1, 7)] == [True] * 6
+    assert digest.count("…[truncated:") >= 1  # and the ones that were cut say so
+
+
+def test_blocks_the_budget_cannot_carry_are_counted():
+    # A budget too small to announce every block must say so — an unreported omission is
+    # the same silent loss as an unmarked cut.
+    blocks = [f"block-{i}-" + ("x" * 500) for i in range(20)]
+
+    digest = compression.build_digest(blocks, [True] * 20, budget_chars=800)
+
+    assert len(digest) <= 800
+    counted = re.search(r"…\[(\d+) retained block\(s\) did not fit the 800-char", digest)
+    assert counted, digest
+    listed = len(re.findall(r"--- block \d+ ---", digest))
+    assert listed == 20 - int(counted.group(1))  # every unlisted block is accounted for
+
+
+def test_a_cut_block_says_so_and_keeps_its_prefix_verbatim():
+    block = "HEADING\n" + ("payload line\n" * 200)
+    blocks = [block, "another " + ("y" * 2000)]
+
+    digest = compression.build_digest(blocks, [True, True], budget_chars=700)
+
+    matched = re.search(
+        r"--- block 1 ---\n(.*?)\n…\[truncated: ([\d,]+) of ([\d,]+) chars retained", digest, re.S
+    )
+    assert matched, digest
+    retained, kept, total = matched.group(1), matched.group(2), matched.group(3)
+    assert int(total.replace(",", "")) == len(block)
+    assert int(kept.replace(",", "")) == len(retained)  # the marker's claim is the truth
+    assert block.startswith(retained)  # and what it kept is the verbatim prefix
+
+
+def test_a_binding_budget_does_not_starve_the_newest_block():
+    # Regression: the last retained block used to be cut mid-word off the end of the
+    # digest because the older blocks had already taken the whole budget.
+    newest = "the newest decision: merge commit 7a50ec1, branch fix/compression-digest-budget"
+    blocks = ["x" * 6000, newest]
+
+    digest = compression.build_digest(blocks, [True, True], budget_chars=1000)
+
+    assert newest in digest
+    assert len(digest) <= 1000
+
+
+def test_a_digest_that_fits_is_the_blocks_under_the_header():
+    blocks = ["first block", "second block"]
+
+    digest = compression.build_digest(blocks, [True, False], model="m", budget_chars=10_000)
+
+    assert digest == (
+        "[structured-aux extractive digest] retained 1/2 blocks · model=m · "
+        "no text was generated; retained text is verbatim."
+        "\n\n--- block 1 ---\nfirst block"
+    )
+    assert "truncated" not in digest
+
+
+def test_a_truncation_cuts_at_a_line_boundary():
+    block = "".join(f"line {i}\n" for i in range(200))
+
+    digest = compression.build_digest([block], [True], budget_chars=600)
+
+    body = digest.split("--- block 1 ---\n", 1)[1]
+    retained = body[: body.index("…[truncated")].removesuffix("\n")
+    assert retained.endswith("\n")
+    assert block.startswith(retained)
 
 
 def test_the_failing_compression_call_is_named_in_the_log(caplog):

@@ -242,6 +242,46 @@ def select(
     return [any(kept.get(name, False) for name in names) for names in names_by_block]
 
 
+# A budget that runs out cuts the end of the digest, and the prompt is oldest-first: a
+# first-come-first-served budget therefore starves exactly the newest retained blocks —
+# the rounds a continuation needs most. When the retained text does not fit, the budget
+# left is shared evenly over the blocks still to come instead.
+#
+# A cut block must say it was cut: a silent mid-word cut reads as if the text ended
+# there, which contradicts the header's promise that retained text is verbatim. The
+# marker also names the recovery path, so budget-dropped text stays reachable. Blocks
+# that could not be announced at all are counted in a trailer for the same reason.
+_TRUNCATION_MARKER = "\n…[truncated: {kept:,} of {total:,} chars retained; recover the rest with session_search]"
+_OMISSION_MARKER = (
+    "\n…[{count} retained block(s) did not fit the {budget:,}-char digest budget; recover them with session_search]"
+)
+
+# Cost of announcing a block (its index plus a marker). Reserving one announcement per
+# block still to come is what stops an early block from spending a late block's space.
+_ANNOUNCE_CHARS = 150
+
+
+def _truncation_marker(kept: int, total: int) -> str:
+    """Marker appended to a block the digest budget could not carry in full."""
+    return _TRUNCATION_MARKER.format(kept=kept, total=total)
+
+
+def _omission_marker(count: int, budget: int) -> str:
+    """Trailer counting retained blocks the digest could not announce."""
+    return _OMISSION_MARKER.format(count=count, budget=budget)
+
+
+def _clean_cut(text: str, limit: int) -> int:
+    """Largest prefix length not exceeding ``limit``, cut after a whole line then a word."""
+    if limit >= len(text):
+        return len(text)
+    newline = text.rfind("\n", 0, limit)
+    if newline >= limit // 2:
+        return newline + 1
+    space = text.rfind(" ", 0, limit)
+    return space + 1 if space > 0 else limit
+
+
 def build_digest(
     blocks: list[str],
     keep: list[bool],
@@ -255,6 +295,13 @@ def build_digest(
     kept anyway. An empty digest would make Hermes treat compression as failed and fall
     back to the main model, which is a worse outcome than retaining the most recent
     context.
+
+    Retains wholesale while the text fits — byte-identical to the blocks under the
+    header. Once it does not fit, three rules hold: every retained block is at least
+    announced (its index, size and a recovery pointer) so nothing vanishes silently; the
+    leftover budget still goes to verbatim text in prompt order, so a small block is never
+    sacrificed to a large one before it; and each block that is not carried in full states
+    how much of it survived.
     """
     budget_chars = budget_chars if budget_chars is not None else config.compression_output_budget_chars()
     total = len(blocks)
@@ -266,17 +313,39 @@ def build_digest(
         f"{DIGEST_HEADER} retained {len(retained)}/{total} blocks · model={model or 'unknown'} · "
         "no text was generated; retained text is verbatim."
     )
+    wholesale = [f"\n\n--- block {index} ---\n{block}" for index, block in enumerate(retained, start=1)]
+    if len(header) + sum(map(len, wholesale)) <= budget_chars:
+        return header + "".join(wholesale)
+
+    # Hold back room for the trailer: a digest that ran out of budget must still be able
+    # to say how many blocks that cost, or the omission is silent again.
+    limit = budget_chars - len(_omission_marker(len(retained), budget_chars))
     parts = [header]
     used = len(header)
-    for index, block in enumerate(retained, start=1):
-        piece = f"\n\n--- block {index} ---\n{block}"
-        remaining = budget_chars - used
-        if remaining <= 0:
+    for position, (index, block) in enumerate(enumerate(retained, start=1)):
+        prefix = f"\n\n--- block {index} ---\n"
+        slack = limit - used
+        blocks_after = len(retained) - position
+        # Reserve one announcement per block still to come, so a block that arrives late
+        # is not left with a budget an earlier block has already spent.
+        room = min(slack - len(prefix), slack - len(prefix) - blocks_after * _ANNOUNCE_CHARS)
+        if slack - len(prefix) < len(_truncation_marker(0, len(block))):
             break
-        if len(piece) > remaining:
-            piece = piece[:remaining]
+        room = max(0, room)
+        if len(block) <= room:
+            piece = prefix + block
+        else:
+            marker = _truncation_marker(min(room, len(block)), len(block))
+            kept = _clean_cut(block, max(0, room - len(marker)))
+            marker = _truncation_marker(kept, len(block))
+            kept = max(0, min(kept, slack - len(prefix) - len(marker)))
+            piece = prefix + block[:kept] + _truncation_marker(kept, len(block))
         parts.append(piece)
         used += len(piece)
+
+    missing = len(retained) - len(parts) + 1
+    if missing > 0:
+        parts.append(_omission_marker(missing, budget_chars))
     return "".join(parts)
 
 
