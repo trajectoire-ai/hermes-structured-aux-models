@@ -79,6 +79,112 @@ def test_http_error_raises(client, make_transport):
         client(make_transport(status=429, body=b"slow down")).ask(state={}, questions=QUESTIONS)
 
 
+# ── retry and logging on failure ────────────────────────────────────────────────
+
+
+def test_a_transient_failure_is_retried_and_the_answer_returned(client, flaky_transport, choice):
+    transport = flaky_transport(failures=2, answers={"verdict": choice("APPROVE")})
+
+    result = client(transport).ask(state={}, questions=QUESTIONS)
+
+    assert result.label("verdict", ("APPROVE", "DENY")) == "APPROVE"
+    assert len(transport.attempts) == 3
+
+
+def test_a_retryable_status_is_retried(client, make_transport):
+    # 503 is the provider being briefly unavailable, not a judgement on the request.
+    transport = make_transport(status=503, body=b"unavailable")
+
+    with pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    assert len(transport.calls) == config.decision_max_attempts() == 3
+
+
+def test_a_payload_or_credential_status_is_not_retried(client, make_transport):
+    transport = make_transport(status=401, body=b"no key")
+
+    with pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    assert len(transport.calls) == 1
+
+
+def test_a_contract_violation_is_not_retried(client, make_transport):
+    # A 200 whose answers are missing or unparseable is not a transport blip: repeating it
+    # only repeats the same contract failure.
+    transport = make_transport(body=json.dumps({"model": "m"}).encode())
+
+    with pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    assert len(transport.calls) == 1
+
+
+def test_attempts_stop_at_the_ceiling_and_the_last_error_is_raised(client, flaky_transport):
+    transport = flaky_transport(failures=99)
+
+    with pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    assert len(transport.attempts) == config.decision_max_attempts() == 3
+
+
+def test_retry_backoff_doubles_per_attempt(client, flaky_transport, monkeypatch):
+    monkeypatch.setattr(config, "decision_retry_backoff_seconds", lambda: 0.5)
+    slept: list[float] = []
+    monkeypatch.setattr(decisions.time, "sleep", slept.append)
+    transport = flaky_transport(failures=2)
+
+    with pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)  # third attempt is the last, so it raises
+
+    assert slept == [0.5, 1.0]
+
+
+def test_a_recovered_call_is_logged_at_warning(client, flaky_transport, choice, caplog):
+    transport = flaky_transport(failures=1, answers={"verdict": choice("APPROVE")})
+
+    with caplog.at_level("WARNING"):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("attempt 1/3" in message and "retrying" in message for message in messages)
+    assert any("recovered on attempt 2/3" in message for message in messages)
+
+
+def test_the_final_failure_is_logged_at_error_with_its_attempt_context(client, flaky_transport, caplog):
+    transport = flaky_transport(failures=99)
+
+    with caplog.at_level("ERROR"), pytest.raises(DecisionError):
+        client(transport).ask(state={}, questions=QUESTIONS)
+
+    errors = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+    assert any("attempt 3/3" in message and "questions=1" in message for message in errors)
+
+
+def test_a_slow_successful_call_is_logged_at_warning(client, choice, monkeypatch, caplog):
+    # The stall that costs a compression its extractive path starts as a slow call: half the
+    # timeout is worth a line well before the full one.
+    def slow_transport(url, headers, body_bytes, timeout):
+        return 200, json.dumps({
+            "answers": {"verdict": choice("APPROVE")}, "model": "m", "usage": {}, "id": "x",
+        }).encode("utf-8"), {}
+
+    ticks = {"n": 0}
+
+    def fake_monotonic():
+        ticks["n"] += 1
+        return 0.0 if ticks["n"] == 1 else 8.0  # 8 s for a 5 s timeout: past the slow-call line
+
+    monkeypatch.setattr(decisions.time, "monotonic", fake_monotonic)
+
+    with caplog.at_level("WARNING"):
+        client(slow_transport).ask(state={}, questions=QUESTIONS)
+
+    assert any("decision call slow" in record.getMessage() for record in caplog.records)
+
+
 def test_invalid_json_raises(client, make_transport):
     with pytest.raises(DecisionError):
         client(make_transport(body=b"not json")).ask(state={}, questions=QUESTIONS)

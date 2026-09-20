@@ -12,6 +12,7 @@ anything into the Hermes runtime. Tests inject a fake transport.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -20,14 +21,32 @@ from typing import Any, Callable
 
 from . import config, privacy
 
+logger = logging.getLogger("structured_aux.decisions")
+
 USER_AGENT = "hermes-structured-aux-models/0.1.0"
 
 # (url, headers, body, timeout) -> (status, body_bytes, response_headers)
 Transport = Callable[[str, dict[str, str], bytes, float], tuple]
 
+# A decision call that failed for one of these reasons is worth trying again: the request
+# never reached a verdict, and the same payload has a real chance of succeeding. Statuses
+# that name a payload or credential problem are deliberately absent — retrying a 400/401/422
+# only repeats a request the provider has already judged wrong.
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 520, 522, 524})
+
 
 class DecisionError(RuntimeError):
-    """The decision provider could not produce a usable answer."""
+    """The decision provider could not produce a usable answer.
+
+    ``retryable`` marks a transient transport failure (connection error, read timeout, or a
+    retryable HTTP status) that a later attempt may still turn into a verdict. ``status``
+    carries the HTTP status when there was one, for the log line.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False, status: int | None = None) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status = status
 
 
 class UnsupportedRequest(RuntimeError):
@@ -102,9 +121,13 @@ def _urllib_transport(url: str, headers: dict[str, str], body: bytes, timeout: f
             return int(response.status), response.read(), dict(response.headers.items())
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
-        raise DecisionError(f"decision provider returned HTTP {exc.code}: {detail}") from exc
+        raise DecisionError(
+            f"decision provider returned HTTP {exc.code}: {detail}",
+            retryable=exc.code in RETRYABLE_STATUSES,
+            status=int(exc.code),
+        ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise DecisionError(f"decision provider connection failed: {exc}") from exc
+        raise DecisionError(f"decision provider connection failed: {exc}", retryable=True) from exc
 
 
 class DecisionClient:
@@ -138,7 +161,16 @@ class DecisionClient:
         questions: dict[str, dict[str, Any]],
         model: str | None = None,
     ) -> DecisionResult:
-        """Send one bounded decision request and return its validated answers."""
+        """Send one bounded decision request and return its validated answers.
+
+        A *transient* failure — a connection error, a read timeout, or a retryable HTTP
+        status — is retried up to ``decision_max_attempts`` (3 by default) with a doubling
+        backoff. That matters beyond politeness: Hermes treats an auxiliary compression call
+        as critical-path work and, on a full-budget timeout, skips its own same-provider
+        retry and falls back to the main model — which turns one stalled decision call into
+        a prose summary and loses the extractive guarantee. Every attempt is logged, so a
+        call that needed retrying (or one that never recovered) is visible in `errors.log`.
+        """
         if not self.api_key:
             raise DecisionError("no OpenRouter credential is configured")
         if not self.base_url.startswith("https://"):
@@ -161,16 +193,75 @@ class DecisionClient:
             "X-OpenRouter-Title": config.app_title(),
         }
 
-        started = time.monotonic()
-        raw_result = self._transport(self.url, headers, body, self.timeout)
-        latency_ms = (time.monotonic() - started) * 1000.0
+        resolved_model = model or self.model
+        max_attempts = config.decision_max_attempts()
+        attempt = 1
+        while True:
+            started = time.monotonic()
+            try:
+                raw_result = self._transport(self.url, headers, body, self.timeout)
+                result = self._parse(
+                    raw_result, questions, model or self.model,
+                    latency_ms=(time.monotonic() - started) * 1000.0,
+                )
+            except DecisionError as exc:
+                elapsed_ms = (time.monotonic() - started) * 1000.0
+                if not exc.retryable or attempt >= max_attempts:
+                    logger.error(
+                        "decision call failed: attempt %d/%d after %.0f ms (model=%s, questions=%d, status=%s): %s",
+                        attempt, max_attempts, elapsed_ms, resolved_model, len(questions),
+                        exc.status if exc.status is not None else "-", exc,
+                    )
+                    raise
+                delay = config.decision_retry_backoff_seconds() * (2 ** (attempt - 1))
+                logger.warning(
+                    "decision call failed transiently: attempt %d/%d after %.0f ms "
+                    "(model=%s, questions=%d, status=%s), retrying in %.1f s: %s",
+                    attempt, max_attempts, elapsed_ms, resolved_model, len(questions),
+                    exc.status if exc.status is not None else "-", delay, exc,
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
 
+            elapsed_ms = result.latency_ms
+            if attempt > 1:
+                logger.warning(
+                    "decision call recovered on attempt %d/%d after %.0f ms (model=%s, questions=%d)",
+                    attempt, max_attempts, elapsed_ms, resolved_model, len(questions),
+                )
+            elif elapsed_ms >= self.slow_call_ms:
+                logger.warning(
+                    "decision call slow: %.0f ms for attempt 1/%d (model=%s, questions=%d)",
+                    elapsed_ms, max_attempts, resolved_model, len(questions),
+                )
+            else:
+                logger.debug(
+                    "decision call answered in %.0f ms on attempt %d/%d (model=%s, questions=%d)",
+                    elapsed_ms, attempt, max_attempts, resolved_model, len(questions),
+                )
+            return result
+
+    @property
+    def slow_call_ms(self) -> float:
+        """A call slower than half its timeout is worth a log line: it is the shape of stall
+        that, at the full timeout, costs the whole compression its extractive path."""
+        return max(1000.0, self.timeout * 500.0)
+
+    def _parse(
+        self, raw_result: tuple, questions: dict[str, dict[str, Any]], model: str, *, latency_ms: float,
+    ) -> DecisionResult:
+        """Validate one transport response into a ``DecisionResult``."""
         if not isinstance(raw_result, tuple) or len(raw_result) < 2:
             raise DecisionError("decision transport returned an invalid response tuple")
         status, raw = int(raw_result[0]), raw_result[1]
         if status < 200 or status >= 300:
             detail = bytes(raw).decode("utf-8", "replace")[:500] if raw else ""
-            raise DecisionError(f"decision provider returned HTTP {status}: {detail}")
+            raise DecisionError(
+                f"decision provider returned HTTP {status}: {detail}",
+                retryable=status in RETRYABLE_STATUSES,
+                status=status,
+            )
 
         try:
             data = json.loads(raw)

@@ -51,9 +51,11 @@ _DEFAULTS: dict[str, Any] = {
     "app_referer": DEFAULT_APP_REFERER,
     "app_title": DEFAULT_APP_TITLE,
     "timeout_seconds": 15.0,
+    "decision_max_attempts": 3,
+    "decision_retry_backoff_seconds": 0.5,
     "compression_blocks_per_call": 16,
     "compression_max_blocks": 48,
-    "compression_output_budget_chars": 6000,
+    "compression_output_budget_chars": 18000,
     "compression_min_block_chars": 120,
     "compression_call_budget_tokens": 8000,
 }
@@ -140,6 +142,22 @@ def timeout_seconds() -> float:
     return min(120.0, max(1.0, _as_float(_raw_settings().get("timeout_seconds"), _DEFAULTS["timeout_seconds"])))
 
 
+def decision_max_attempts() -> int:
+    """Total attempts for one decision request, first try included.
+
+    A transient failure gets another try because Hermes does not retry a critical-path
+    auxiliary call itself — it hands compression to the main model instead.
+    """
+    return min(10, max(1, _as_int(_raw_settings().get("decision_max_attempts"), _DEFAULTS["decision_max_attempts"])))
+
+
+def decision_retry_backoff_seconds() -> float:
+    """Base delay before a retry; doubles per attempt (0.5 s, 1.0 s, ... for 3 attempts)."""
+    return min(30.0, max(0.0, _as_float(
+        _raw_settings().get("decision_retry_backoff_seconds"), _DEFAULTS["decision_retry_backoff_seconds"],
+    )))
+
+
 def compression_blocks_per_call() -> int:
     return min(16, max(2, _as_int(_raw_settings().get("compression_blocks_per_call"), _DEFAULTS["compression_blocks_per_call"])))
 
@@ -149,6 +167,13 @@ def compression_max_blocks() -> int:
 
 
 def compression_output_budget_chars() -> int:
+    """Character ceiling for the assembled digest.
+
+    The digest is the concatenation of the retained blocks, so its size is not bounded by
+    one decision call's window — every call stays inside Jev's 32,000-token window and the
+    digest sums however many chunks survived. The ceiling therefore only has to stay small
+    enough to be cheaper than the turns it replaces, not small enough to fit a call.
+    """
     return max(400, _as_int(_raw_settings().get("compression_output_budget_chars"), _DEFAULTS["compression_output_budget_chars"]))
 
 
