@@ -32,6 +32,12 @@ real auxiliary provider.
   with prose. Retry the *transport*, never the answer: a contract failure is not retried.
 - **Never fabricate a decision.** If the provider returns a label outside the
   contract's criteria set, raise. Do not map unknown labels onto a default.
+- **The digest never loses text silently.** Retained blocks are carried verbatim, and a
+  budget that cannot carry them in full must say so on the block (`…[truncated: KEPT of
+  TOTAL chars retained …]`) or in the omission trailer — never a bare mid-word cut, which
+  reads as if the text ended there and contradicts the header's verbatim promise. The
+  budget left is not spent in prompt order: the prompt is oldest-first, so spending in
+  order starves exactly the newest rounds.
 - **Keep the tree clean for Hermes' install-time plugin scanner** (`tools/plugin_guard.py`):
   do not introduce literal destructive-delete command strings (even inside test
   fixtures), an environment-variable subscript, an environment-dumping command name, or
