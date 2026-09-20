@@ -82,8 +82,10 @@ Symptoms of installing into the wrong home:
 - no app page appears at `https://openrouter.ai/apps?url=https://trajectoire.ai`.
 
 If one machine runs both a profile-scoped gateway **and** a machine-level `serve`, install in
-**both** homes. Then restart every long-lived process that makes auxiliary calls: discovery is
-memoized, so a process started before the install keeps its old registry until it restarts.
+**both** homes — and configure in both (see [Where to configure](#where-to-configure); install
+location and configuration are separate decisions, and both are per home). Then restart every
+long-lived process that makes auxiliary calls: discovery is memoized, so a process started
+before the install keeps its old registry until it restarts.
 
 ## Configure
 
@@ -108,6 +110,42 @@ model blank.
 
 That string is a **routing token, not a model id**. It never reaches OpenRouter — the
 Jev model actually sent to the decisions endpoint is `decision_model` below.
+
+### Where to configure
+
+Configuration is per home, exactly like install. The mapping lives in that home's own
+`config.yaml`, and Hermes resolves it **per auxiliary call** from whichever home is bound to
+the caller — so the home you installed into is not necessarily the home that reads it:
+
+| Caller | Home the mapping is read from |
+|---|---|
+| a conversation turn — tool use, smart approval, in-turn compaction | the session profile's home (bound for the turn) |
+| work **outside** a turn — manual `/compress`, title generation, background review, memory flush | the **launcher** home the process started with |
+
+The machine-level `hermes serve` backend is the easy one to get wrong here too. A manual
+`/compress` is dispatched as an RPC on the launcher home, not inside a turn, so
+`auxiliary.compression` is read from the **root** config (`~/.hermes/config.yaml`) — never from
+the session profile's. With it unset there, compression resolves `provider: auto` and quietly
+runs on your main model: the exact fallback this plugin exists to avoid. The tell is an
+`Auxiliary compression: using <your main model>` line with no
+`Auxiliary compression: using structured-aux (structured-aux/compression)` beside it. In-turn
+tasks are unaffected — that is why smart approval can reach the plugin while a manual `/compress`
+on the same session does not.
+
+So on a host that runs both a profile-scoped gateway and a machine-level `serve`, run the block
+above twice — once per home:
+
+```bash
+# launcher / root home (~/.hermes/config.yaml)
+hermes config set auxiliary.compression.provider structured-aux --force
+hermes config set auxiliary.compression.model structured-aux/compression --force
+
+# session profile home (~/.hermes/profiles/<p>/config.yaml)
+hermes -p <p> config set auxiliary.compression.provider structured-aux --force
+hermes -p <p> config set auxiliary.compression.model structured-aux/compression --force
+```
+
+Repeat for `approval` and `mcp` if you want those routed in that home too.
 
 ### Credential
 
