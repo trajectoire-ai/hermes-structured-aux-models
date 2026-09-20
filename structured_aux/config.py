@@ -53,7 +53,7 @@ _DEFAULTS: dict[str, Any] = {
     "timeout_seconds": 15.0,
     "compression_blocks_per_call": 16,
     "compression_max_blocks": 48,
-    "compression_output_budget_chars": 6000,
+    "compression_output_budget_chars": 18000,
     "compression_min_block_chars": 120,
     "compression_call_budget_tokens": 8000,
 }
@@ -149,6 +149,13 @@ def compression_max_blocks() -> int:
 
 
 def compression_output_budget_chars() -> int:
+    """Character ceiling for the assembled digest.
+
+    The digest is the concatenation of the retained blocks, so its size is not bounded by
+    one decision call's window — every call stays inside Jev's 32,000-token window and the
+    digest sums however many chunks survived. The ceiling therefore only has to stay small
+    enough to be cheaper than the turns it replaces, not small enough to fit a call.
+    """
     return max(400, _as_int(_raw_settings().get("compression_output_budget_chars"), _DEFAULTS["compression_output_budget_chars"]))
 
 

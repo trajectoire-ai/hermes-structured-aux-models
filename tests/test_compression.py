@@ -120,6 +120,19 @@ def test_respects_the_budget():
     assert len(compression.build_digest(blocks, [True] * 20, budget_chars=800)) <= 800
 
 
+def test_default_budget_comes_from_the_configured_setting(monkeypatch):
+    monkeypatch.setattr(compression.config, "compression_output_budget_chars", lambda: 1200)
+    blocks = [f"block-{i}-" + ("x" * 500) for i in range(10)]
+
+    assert len(compression.build_digest(blocks, [True] * 10)) <= 1200
+
+
+def test_shipped_digest_budget_matches_the_documented_default():
+    # The shipped ceiling is what the README's settings table advertises; pin it so the two
+    # cannot drift. Raise both together when it changes.
+    assert compression.config.compression_output_budget_chars() == 18000
+
+
 def test_never_empty():
     assert compression.build_digest([], [])
 

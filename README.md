@@ -147,6 +147,55 @@ hermes -p <p> config set auxiliary.compression.model structured-aux/compression 
 
 Repeat for `approval` and `mcp` if you want those routed in that home too.
 
+### Compression window
+
+Hermes resolves the compression model's context window on its own — from a catalog, a live
+`/models` probe, or the persistent context-length cache — and it never consults the session
+model's window for that. `structured-aux/compression` is a **routing token**, not a catalog
+model, so every resolution step misses and Hermes falls back to a generic **256,000**-token
+assumption.
+
+That number matters more than it looks. Hermes' default compaction threshold is **50 % of the
+main model's window** (524,288 tokens for a 1,048,576-token main model), and
+`check_compression_model_feasibility` refuses to leave a compression model smaller than the
+threshold. With 256,000 it prints
+
+```
+Auxiliary compression model structured-aux/compression has 256000 token context, below the
+main model's compression threshold of 524288 tokens — auto-lowered session threshold to 256000
+```
+
+and **halves the session's compaction threshold for its whole lifetime** — the session then
+compacts roughly twice as often, each time retaining a smaller window. Nothing is broken; the
+plugin is asked for a summary it can serve. The session just carries less context than it
+should.
+
+The route chunks — every decision call stays inside Jev's 32,000-token window, and a prompt of
+any size becomes as many calls as it needs — so it accepts a **full session-window prompt**.
+Declare that explicitly, in every home whose agents do the compacting:
+
+```bash
+hermes -p <p> config set auxiliary.compression.context_length 1048576 --force
+```
+
+One value, no per-model bookkeeping: use the main model's window (it is what the threshold is
+derived from, so `aux >= main` always clears the check). `--force` because the key is not in the
+shipped config schema. The equivalent through Hermes' documented override surface is
+`model_overrides.structured-aux['structured-aux/compression'].context_window`.
+
+Verify it took, in a fresh process under that home:
+
+```bash
+HERMES_HOME=<home> python -c "
+from agent.model_metadata import get_model_context_length
+print(get_model_context_length('structured-aux/compression',
+      base_url='https://openrouter.ai', provider='structured-aux'))"
+```
+
+`1048576`, not `256000`. A long-lived session keeps the threshold it already computed until its
+agent is rebuilt, so expect the new value on the next session (or after a restart), not
+mid-conversation.
+
 ### Credential
 
 Only the OpenRouter credential is used. It is resolved in this order:
@@ -181,7 +230,7 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
 | `compression_blocks_per_call` | `16` | blocks asked about per provider call |
 | `compression_call_budget_tokens` | `8000` | estimated-token ceiling for one decision call; capped at `28000` so no call can exceed Jev's 32,000-token window |
-| `compression_output_budget_chars` | `6000` | digest size ceiling |
+| `compression_output_budget_chars` | `18000` | character ceiling for the assembled digest. The digest is the concatenation of every retained chunk, so it is not bounded by one call's window — see [Compression window](#compression-window) |
 | `compression_min_block_chars` | `120` | minimum size before a block is closed |
 
 ### App attribution
@@ -236,6 +285,10 @@ Three invariants matter here:
 - The digest is never empty. If the provider retains nothing, the final block is kept
   anyway — an empty result would make Hermes treat compression as failed and fall back
   to your main model, which is worse than retaining the most recent context.
+- The digest budget bounds the **sum** of the retained blocks, not one call's payload. Each
+  call is a separate decision, so the digest is assembled from however many chunks came back;
+  `compression_output_budget_chars` (18,000 by default) only has to stay smaller than the
+  turns it replaces, and Hermes injects the result as the session's context summary.
 
 ## Cost posture
 
