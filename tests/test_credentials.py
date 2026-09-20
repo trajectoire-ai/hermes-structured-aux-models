@@ -29,6 +29,7 @@ def fake_pool(monkeypatch):
 
     def install(*, api_key="", has_credentials=True, raises=None, pool=None):
         module = types.ModuleType("agent.credential_pool")
+        requested: list[str] = []
 
         class _Entry:
             runtime_api_key = api_key
@@ -41,6 +42,7 @@ def fake_pool(monkeypatch):
                 return _Entry()
 
         def load_pool(provider):
+            requested.append(provider)
             if raises is not None:
                 raise raises
             if pool is not None:
@@ -48,6 +50,7 @@ def fake_pool(monkeypatch):
             return _Pool()
 
         module.load_pool = load_pool
+        setattr(module, "requested", requested)  # dynamic: a module stub, not a real module
         monkeypatch.setitem(sys.modules, "agent.credential_pool", module)
         return module
 
@@ -86,3 +89,29 @@ def test_unresolvable_pool_degrades_to_no_credential(fake_pool):
     # credential lookup: no key means "cannot serve this request", and Hermes falls back.
     fake_pool(raises=RuntimeError("no store"))
     assert config.api_key() == ""
+
+
+def test_pool_lookup_uses_the_default_provider(fake_pool):
+    module = fake_pool(api_key="pool-key-123")
+    assert config.api_key() == "pool-key-123"
+    assert module.requested == ["openrouter"]
+
+
+def test_pool_provider_is_configurable(fake_pool, monkeypatch):
+    # The pool lookup is keyed on the provider name, so an install that stores the key
+    # under another name must be able to say so instead of silently finding nothing.
+    module = fake_pool(api_key="pool-key-123")
+    monkeypatch.setattr(config, "_raw_settings", lambda: {"credential_pool_provider": "typesafe"})
+
+    assert config.credential_pool_provider() == "typesafe"
+    assert config.api_key() == "pool-key-123"
+    assert module.requested == ["typesafe"]
+
+
+def test_blank_pool_provider_falls_back_to_the_default(fake_pool, monkeypatch):
+    module = fake_pool(api_key="pool-key-123")
+    monkeypatch.setattr(config, "_raw_settings", lambda: {"credential_pool_provider": "   "})
+
+    assert config.credential_pool_provider() == "openrouter"
+    assert config.api_key() == "pool-key-123"
+    assert module.requested == ["openrouter"]

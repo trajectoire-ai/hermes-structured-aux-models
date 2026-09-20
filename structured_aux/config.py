@@ -34,8 +34,9 @@ DEFAULT_APP_TITLE = "hermes-structured-aux"
 DEFAULT_MODEL = "~typesafe/jev-latest"
 CREDENTIAL_ENV_VAR = "OPENROUTER_API_KEY"
 # Hermes' own credential store key for OpenRouter, used as the last-resort credential
-# source (see ``_pool_api_key``).
-POOL_PROVIDER = "openrouter"
+# source (see ``_pool_api_key``). A default, not a fixture: an install whose OpenRouter key
+# is stored under a different provider name sets ``credential_pool_provider``.
+DEFAULT_POOL_PROVIDER = "openrouter"
 
 # Task -> the model id suffix an operator writes into auxiliary.<task>.model.
 # The shim reads this back off the request to know which contract to apply.
@@ -46,6 +47,7 @@ _DEFAULTS: dict[str, Any] = {
     "decision_model": DEFAULT_MODEL,
     "decision_base_url": DEFAULT_BASE_URL,
     "decision_path": DEFAULT_PATH,
+    "credential_pool_provider": DEFAULT_POOL_PROVIDER,
     "app_referer": DEFAULT_APP_REFERER,
     "app_title": DEFAULT_APP_TITLE,
     "timeout_seconds": 15.0,
@@ -165,6 +167,22 @@ def compression_call_budget_tokens() -> int:
     return min(28000, max(1000, value))
 
 
+def credential_pool_provider() -> str:
+    """Provider key whose Hermes credential-pool entry supplies the decision credential.
+
+    Defaults to ``openrouter``, because that is where ``hermes auth add openrouter`` lands.
+    Set ``plugins.entries.hermes-structured-aux-models.settings.credential_pool_provider``
+    when the OpenRouter key is stored under a different provider name — the pool lookup is
+    keyed on the provider, so a hardcoded name silently finds nothing and the plugin
+    degrades to "no credential" on an install that legitimately holds one.
+
+    A blank value is treated as unset rather than as a provider named "": an empty key
+    would look like a deliberate misconfiguration and fail the lookup the same way.
+    """
+    value = str(_raw_settings().get("credential_pool_provider") or "").strip()
+    return value or _DEFAULTS["credential_pool_provider"]
+
+
 def _dotenv_value(name: str) -> str:
     """Read ``name`` from the active profile's ``.env`` without importing Hermes internals."""
     try:
@@ -195,14 +213,15 @@ def _pool_api_key() -> str:
 
     An operator who already ran ``hermes auth add openrouter`` has the credential in Hermes'
     store, and that is the same key the rest of Hermes bills; reading it here keeps one source
-    of truth instead of duplicating the secret into ``.env``. Wrapped so an unresolvable pool
-    degrades to "no credential" — the decision client then raises and Hermes falls back to the
-    operator's real auxiliary provider.
+    of truth instead of duplicating the secret into ``.env``. The provider key is
+    ``credential_pool_provider``. Wrapped so an unresolvable pool degrades to "no credential"
+    — the decision client then raises and Hermes falls back to the operator's real auxiliary
+    provider.
     """
     try:
         from agent.credential_pool import load_pool
 
-        pool = load_pool(POOL_PROVIDER)
+        pool = load_pool(credential_pool_provider())
         if pool is None or not pool.has_credentials():
             return ""
         return str(getattr(pool.select(), "runtime_api_key", "") or "").strip()
