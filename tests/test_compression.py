@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from structured_aux import compression
@@ -148,3 +150,74 @@ def test_short_prompt_stays_one_block(fake_client):
 def test_empty_prompt_raises(fake_client):
     with pytest.raises(ValueError):
         compression.compress(fake_client(keep_all), "   ")
+
+
+# ── call budget (Jev's window is 32,000 tokens) ─────────────────────────────────
+
+
+def payload_tokens(call):
+    """Estimated tokens of the JSON a call would actually put on the wire."""
+    return compression.estimate_tokens(
+        json.dumps({"state": call["state"], "questions": call["questions"]}, separators=(",", ":"))
+    )
+
+
+def huge_block(paragraphs=300, size=600):
+    return "\n\n".join(f"paragraph {i} " + "x" * size for i in range(paragraphs))
+
+
+def test_split_by_budget_preserves_text():
+    text = huge_block(paragraphs=40, size=500)
+    pieces = compression.split_by_budget(text, 500)
+
+    assert len(pieces) > 1
+    assert "".join(pieces) == text
+    assert all(compression.estimate_tokens(piece) <= 500 for piece in pieces)
+
+
+def test_split_prefers_line_boundaries():
+    text = "\n\n".join(f"para {i} " + "y" * 900 for i in range(10))
+    pieces = compression.split_by_budget(text, 400)
+
+    # Cuts land on the separators, so no piece begins mid-word or mid-paragraph.
+    assert all(piece.startswith("para ") for piece in pieces)
+    assert "".join(pieces) == text
+
+
+def test_one_oversized_block_is_split_across_calls(fake_client):
+    client = fake_client(keep_all)
+    flags = compression.select(client, [huge_block()], budget_tokens=2000)
+
+    assert flags == [True]  # one block in, one flag out
+    assert len(client.calls) > 1  # it did not go out in a single call
+    assert all(payload_tokens(call) <= 2000 for call in client.calls)
+
+
+def test_every_call_in_a_big_compression_fits_the_budget(fake_client):
+    client = fake_client(keep_all)
+    prompt = huge_block(paragraphs=400, size=1500)  # ~600k chars, ~150k tokens
+    compression.compress(client, prompt, max_blocks=48, min_block_chars=120)
+
+    assert all(payload_tokens(call) <= compression.config.compression_call_budget_tokens() for call in client.calls)
+
+
+def test_piece_keep_retains_the_whole_block(fake_client):
+    client = fake_client(
+        lambda state, questions: {
+            name: {"choice": "KEEP" if name.endswith("_1") else "DROP"} for name in questions
+        }
+    )
+    assert compression.select(client, [huge_block()], budget_tokens=2000) == [True]
+
+
+def test_all_pieces_dropped_drops_the_block(fake_client):
+    client = fake_client(drop_all)
+    assert compression.select(client, [huge_block()], budget_tokens=2000) == [False]
+
+
+def test_small_blocks_still_batch_by_count(fake_client):
+    client = fake_client(keep_all)
+    flags = compression.select(client, [f"b{i}" for i in range(40)], blocks_per_call=16)
+
+    assert flags == [True] * 40
+    assert [len(call["questions"]) for call in client.calls] == [16, 16, 8]

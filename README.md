@@ -137,6 +137,7 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | `timeout_seconds` | `15.0` | per decision request |
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
 | `compression_blocks_per_call` | `16` | blocks asked about per provider call |
+| `compression_call_budget_tokens` | `8000` | estimated-token ceiling for one decision call; capped at `28000` so no call can exceed Jev's 32,000-token window |
 | `compression_output_budget_chars` | `6000` | digest size ceiling |
 | `compression_min_block_chars` | `120` | minimum size before a block is closed |
 
@@ -177,10 +178,18 @@ plugin does the other thing: it segments the prompt into deterministic blocks, a
 `KEEP`/`DROP` per block in bounded batches, and emits a digest assembled **only** from
 retained original text plus a provenance header. Nothing is generated.
 
-Two invariants matter here:
+Three invariants matter here:
 
 - Segmentation never loses text. When a prompt exceeds the block cap the overflow is
   merged into the final block rather than dropped.
+- No call exceeds the call budget. Jev's context window is **32,000 tokens** (OpenRouter
+  states it on the model page) and the decisions endpoint is not a chat endpoint, so a
+  compaction prompt cannot be handed over whole. A block larger than
+  `compression_call_budget_tokens` is split at a paragraph, then a line, boundary; pieces
+  are packed into however many calls the budget requires; and a block is retained if **any**
+  of its pieces is, because retaining the whole block is the safe reading of a partial
+  answer. Nothing is truncated to make something fit: a merged block that is the whole
+  transcript becomes a couple of dozen calls, each inside the window.
 - The digest is never empty. If the provider retains nothing, the final block is kept
   anyway — an empty result would make Hermes treat compression as failed and fall back
   to your main model, which is worse than retaining the most recent context.
