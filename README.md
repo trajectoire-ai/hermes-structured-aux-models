@@ -153,10 +153,14 @@ Only the OpenRouter credential is used. It is resolved in this order:
 
 1. `OPENROUTER_API_KEY` in the process environment;
 2. `OPENROUTER_API_KEY` in the active profile's `.env`;
-3. Hermes' own `openrouter` credential entry (`agent.credential_pool.load_pool`).
+3. Hermes' own credential entry (`agent.credential_pool.load_pool`) for the provider named by
+   `credential_pool_provider` — `openrouter` unless you say otherwise.
 
 Step 3 exists so an operator who already ran `hermes auth add openrouter` needs no duplicate
-secret: the plugin bills the same key as the rest of Hermes. If none of the three resolves, the
+secret: the plugin bills the same key as the rest of Hermes. That lookup is keyed on the provider
+name, so an install holding the OpenRouter key under a different name sets
+`credential_pool_provider` to it; otherwise the lookup finds nothing and looks exactly like "no
+credential configured". If none of the three resolves, the
 provider reports "no OpenRouter credential is configured" and Hermes falls back to your real
 auxiliary provider — a missing key is never fatal. No other credential is required, and none is
 forwarded anywhere except the OpenRouter decisions endpoint.
@@ -172,6 +176,7 @@ Optional, under `plugins.entries.hermes-structured-aux-models.settings`:
 | `decision_base_url` | `https://openrouter.ai` | must be HTTPS |
 | `app_referer` | `https://trajectoire.ai` | OpenRouter `HTTP-Referer`. The app's primary attribution identifier. |
 | `app_title` | `hermes-structured-aux` | OpenRouter `X-OpenRouter-Title`. The app's display name in rankings. |
+| `credential_pool_provider` | `openrouter` | provider key whose Hermes credential-pool entry supplies the decision credential, when `OPENROUTER_API_KEY` is not set in the environment or the profile `.env` |
 | `timeout_seconds` | `15.0` | per decision request |
 | `compression_max_blocks` | `48` | segmentation cap per compression prompt |
 | `compression_blocks_per_call` | `16` | blocks asked about per provider call |
